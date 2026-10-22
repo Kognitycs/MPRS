@@ -1,0 +1,9 @@
+# Copy to android/key.properties and fill in your values.
+# Never commit key.properties or *.jks to git.
+#
+# Generate keystore: scripts/setup-release-signing.ps1
+
+storePassword=YOUR_STORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=upload
+storeFile=upload-keystore.jks

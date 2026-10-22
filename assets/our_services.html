@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Text Image Marquee</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<style>
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Container */
+.marquee-container {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  padding: 0;
+}
+
+/* Track */
+.marquee-track {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  gap: 40px;
+  will-change: transform;
+}
+
+/* Text */
+.marquee-text {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, #c7e1df, #b7b4d6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Circle image */
+.circle-img {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.circle-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Responsive text and circle */
+@media (max-width: 768px) {
+  .marquee-text {
+    font-size: 18px;
+  }
+  .circle-img {
+    width: 44px;
+    height: 44px;
+  }
+}
+</style>
+</head>
+
+<body>
+
+
+
+
+  <div class="marquee-container">
+  <div class="marquee-track" id="track">
+
+    <span class="marquee-text">Ocean Freight</span>
+    <div class="circle-img">
+      <img src="images/1.webp" alt="Ocean Freight">
+    </div>
+
+    <span class="marquee-text">Surface Transport</span>
+    <div class="circle-img">
+      <img src="images/2.webp" alt="Surface Transport">
+    </div>
+
+    <span class="marquee-text">Consolidation Services</span>
+    <div class="circle-img">
+      <img src="images/3.webp" alt="Consolidation Services">
+    </div>
+
+    <span class="marquee-text">Customs Clearance</span>
+    <div class="circle-img">
+      <img src="images/4.webp" alt="Customs Clearance">
+    </div>
+
+    <span class="marquee-text">Cross Country Logistics</span>
+    <div class="circle-img">
+      <img src="images/5.webp" alt="Cross Country Logistics">
+    </div>
+
+    <span class="marquee-text">Air Freight</span>
+    <div class="circle-img">
+      <img src="images/6.webp" alt="Air Freight">
+    </div>
+
+    <span class="marquee-text">Liquid Logistics</span>
+    <div class="circle-img">
+      <img src="images/7.webp" alt="Liquid Logistics">
+    </div>
+
+    <span class="marquee-text">Warehousing & Cross Stuffing</span>
+    <div class="circle-img">
+      <img src="images/8.webp" alt="Warehousing & Cross Stuffing">
+    </div>
+
+    <span class="marquee-text">Maritime Legal Consultancy</span>
+    <div class="circle-img">
+      <img src="images/9.webp" alt="Maritime Legal Consultancy">
+    </div>
+
+  </div>
+</div>
+
+
+<script>
+window.addEventListener("load", () => {
+  const track = document.getElementById("track");
+  const images = track.querySelectorAll("img");
+  let loadedCount = 0;
+
+  function initMarquee() {
+    if (loadedCount === images.length) {
+      // Duplicate content for seamless scroll
+      track.innerHTML += track.innerHTML;
+
+      const totalWidth = track.scrollWidth / 2;
+
+      gsap.fromTo(
+        track,
+        { x: 0 },
+        {
+          x: -totalWidth,
+          duration: 60,
+          ease: "linear",
+          repeat: -1
+        }
+      );
+    }
+  }
+
+  images.forEach(img => {
+    if (img.complete) {
+      loadedCount++;
+      initMarquee();
+    } else {
+      img.addEventListener("load", () => {
+        loadedCount++;
+        initMarquee();
+      });
+      img.addEventListener("error", () => {
+        loadedCount++;
+        initMarquee();
+      });
+    }
+  });
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,4 @@
+// Staging flavor — mirrors Android `staging` / `.test` suffix.
+PRODUCT_BUNDLE_IDENTIFIER = com.mprsshipping.genie.test
+APP_DISPLAY_NAME = MPRS Genie Test
+FIREBASE_CONFIG_DIR = Staging
