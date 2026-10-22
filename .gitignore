@@ -1,0 +1,85 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+
+# macOS zip metadata and AppleDouble files
+__MACOSX/
+**/._*
+
+# Dependencies (Firebase functions and any other package installs)
+node_modules/
+
+# Firebase local cache
+.firebase/
+firebase-debug.log
+ui-debug.log
+
+# Firebase client config. Keep local copies for each flavor; do not push them.
+**/google-services.json
+**/GoogleService-Info.plist
+
+# Machine-specific paths and release signing secrets
+**/local.properties
+**/key.properties
+**/*.jks
+**/*.keystore
+
+# Built installers
+*.apk
+*.aab
+*.ipa
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# API keys and service passwords. Copy app_secrets.example.dart locally.
+lib/core/app_secrets.dart
