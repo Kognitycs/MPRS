@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:mprs_android/core/constants/app_colors.dart';
+import 'package:mprs_android/core/constants/app_strings.dart';
 import 'package:mprs_android/core/constants/app_text_styles.dart';
 import 'package:mprs_android/core/utils/country_utils.dart';
+import 'package:mprs_android/core/utils/network.dart';
+import 'package:mprs_android/core/utils/progress_dialog.dart';
+import 'package:mprs_android/service/auth_mobile_check_service.dart';
 import 'package:mprs_android/model/country_code_model.dart';
 import 'package:mprs_android/screens/auth/login_password_screen.dart';
 import 'package:mprs_android/screens/auth/signup_screen.dart';
@@ -19,6 +23,7 @@ class LoginMobileScreen extends StatefulWidget {
 class _LoginMobileScreenState extends State<LoginMobileScreen> {
   final _phoneController = TextEditingController();
   String? _errorText;
+  bool _isCheckingMobile = false;
   CountryCodeModel selectedCountry = CountryCodeModel(
     name: "India",
     code: "IN",
@@ -77,20 +82,66 @@ class _LoginMobileScreenState extends State<LoginMobileScreen> {
     return RegExp(r'^[6-9]\d{9}$').hasMatch(number);
   }
 
-  void _validatePhone() {
+  Future<void> _validatePhone() async {
     final input = _phoneController.text.trim();
-    if (isValidIndianNumber(input)) {
-      setState(() => _errorText = null);
-      Navigator.push(
+    if (!isValidIndianNumber(input)) {
+      setState(() {
+        _errorText = 'Invalid number. Please try again.';
+      });
+      return;
+    }
+
+    if (_isCheckingMobile) return;
+
+    if (!(await checkInternetConnection())) {
+      if (!mounted) return;
+      setState(() {
+        _errorText = AppStrings.pleaseCheckInternet;
+      });
+      return;
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _errorText = null;
+      _isCheckingMobile = true;
+    });
+
+    ProgressLoader.show(context);
+    try {
+      final result = await AuthMobileCheckService.checkRegistered(input);
+      if (!mounted) return;
+
+      if (!result.succeeded) {
+        setState(() {
+          _errorText = result.message ?? 'Unable to verify mobile number.';
+        });
+        return;
+      }
+
+      if (!result.exists) {
+        setState(() {
+          _errorText =
+              result.message ??
+              'No account found for this mobile number. Please sign up.';
+        });
+        return;
+      }
+
+      if (!mounted) return;
+
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => LoginPasswordScreen(mobileNumber: input),
         ),
       );
-    } else {
-      setState(() {
-        _errorText = 'Invalid number. Please try again.';
-      });
+    } finally {
+      if (mounted) {
+        ProgressLoader.hide(context);
+        setState(() => _isCheckingMobile = false);
+      }
     }
   }
 
@@ -168,7 +219,10 @@ class _LoginMobileScreenState extends State<LoginMobileScreen> {
               const SizedBox(height: 60),
 
               // Continue button
-              MainButton(text: 'Continue', onPressed: _validatePhone),
+              MainButton(
+                text: _isCheckingMobile ? 'Please wait...' : 'Continue',
+                onPressed: _isCheckingMobile ? () {} : _validatePhone,
+              ),
 
               const SizedBox(height: 25),
 

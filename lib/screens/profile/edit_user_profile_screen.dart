@@ -743,6 +743,53 @@ import 'package:mprs_android/widget/custom_buttons.dart';
 import '../../controller/edit_profile_controller.dart';
 import '../auth/ChangePasswordScreen.dart';
 
+const Color _kDangerColor = Color(0xFFC62828);
+
+Future<void> _confirmAndDeleteAccount(
+  BuildContext context,
+  EditProfileController controller,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        title: const Text(
+          'Delete account?',
+          style: TextStyle(
+            color: _kDangerColor,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        content: const Text(
+          'This permanently deletes your account and cannot be undone. '
+          'All associated data will be removed.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: _kDangerColor,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Delete account'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (confirmed != true) return;
+
+  final success = await controller.deleteAccount();
+  if (success) {
+    Get.offAllNamed('/login');
+  }
+}
+
 class EditUserProfileScreen extends StatelessWidget {
   const EditUserProfileScreen({super.key});
 
@@ -770,7 +817,7 @@ class EditUserProfileScreen extends StatelessWidget {
         child: Stack(
           children: [
             SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 10, 20, 140),
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 200),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -1053,13 +1100,39 @@ class EditUserProfileScreen extends StatelessWidget {
                         ),
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    Obx(
+                      () => OutlinedButton.icon(
+                        onPressed: controller.isDeletingAccount.value
+                            ? null
+                            : () => _confirmAndDeleteAccount(context, controller),
+                        icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                        label: Text(
+                          controller.isDeletingAccount.value
+                              ? 'Deleting...'
+                              : 'Delete Account',
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _kDangerColor,
+                          side: const BorderSide(color: _kDangerColor),
+                          minimumSize: const Size(double.infinity, 46),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          textStyle: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
             ),
 
             // LOADING OVERLAY
-            Obx(() => controller.isLoading.value
+            Obx(() => controller.isLoading.value || controller.isDeletingAccount.value
                 ? Container(
               color: Colors.black.withOpacity(0.3),
               child: const Center(

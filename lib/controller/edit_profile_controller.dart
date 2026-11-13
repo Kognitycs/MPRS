@@ -320,7 +320,10 @@ import 'package:mprs_android/core/constants/app_colors.dart';
 import 'package:mprs_android/core/constants/db_helper.dart';
 import 'package:mprs_android/model/common/user_data.dart';
 import 'package:mprs_android/model/update_profile_response.dart';
+import 'package:mprs_android/service/fcm_token_service.dart';
 import 'package:mprs_android/service/http_client_helper.dart';
+import 'package:mprs_android/service/notification/notification_inbox_store.dart';
+import 'package:mprs_android/service/notification/notification_poll_service.dart';
 
 import '../core/utils/snackbar_util.dart';
 
@@ -352,6 +355,7 @@ class EditProfileController extends GetxController {
   var pickedImage = Rxn<File>();
   var userRole = "".obs;
   var isLoading = false.obs;
+  var isDeletingAccount = false.obs;
 
   // Avatar header observables — these are what Obx listens to in the screen
   var displayName = "".obs;
@@ -499,6 +503,74 @@ class EditProfileController extends GetxController {
           backgroundColor: Colors.red, colorText: Colors.white);
     } finally {
       isLoading.value = false;
+    }
+  }
+
+  Future<bool> deleteAccount() async {
+    if (isDeletingAccount.value) return false;
+
+    Get.closeAllSnackbars();
+    isDeletingAccount.value = true;
+
+    try {
+      final token = AuthDataHelper.getToken();
+      if (token.isEmpty) {
+        Get.snackbar(
+          'Error',
+          'You are not signed in',
+          backgroundColor: Colors.red,
+          colorText: Colors.white,
+          snackPosition: SnackPosition.BOTTOM,
+        );
+        return false;
+      }
+
+      final response = await HttpClientHelper.deleteWithBearer(
+        ApiConstants.deleteAccount,
+        token,
+      );
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        DbHelper().clearAll();
+        await AuthDataHelper.clearAllData();
+        NotificationInboxStore.instance.clearSession();
+        await FcmTokenService.clearOnLogout();
+        await NotificationPollService.clearSeenOnLogout();
+        return true;
+      }
+
+      String message = 'Could not delete account';
+      if (response.data.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(response.data);
+          if (decoded is Map && decoded['message'] != null) {
+            message = decoded['message'].toString();
+          }
+        } catch (_) {}
+      } else if (response.message != null && response.message!.isNotEmpty) {
+        message = response.message!;
+      }
+
+      Get.snackbar(
+        'Error',
+        message,
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return false;
+    } catch (e) {
+      debugPrint('Delete account error: $e');
+      Get.snackbar(
+        'Error',
+        'Something went wrong',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return false;
+    } finally {
+      isDeletingAccount.value = false;
     }
   }
 

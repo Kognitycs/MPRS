@@ -64,6 +64,7 @@ class ApiConstants {
   static String get updateUser => '$baseUrl/admin/update-user';
   static String get changeUserType => '$baseUrl/admin/change-user-type';
   static String get changePassword => '$baseUrl/auth/change-password';
+  static String get deleteAccount => '$baseUrl/auth/account';
 
   // Template
   static String get createNotificationTemplate =>
