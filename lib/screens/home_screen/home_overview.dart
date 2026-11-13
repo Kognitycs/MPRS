@@ -17,6 +17,7 @@ import 'package:mprs_android/model/saved_quotations_model.dart';
 import 'package:mprs_android/screens/banner/banner_screen.dart';
 import 'package:mprs_android/screens/booking/today_bookings_screen.dart';
 import 'package:mprs_android/screens/home_screen/home_actions.dart';
+import 'package:mprs_android/screens/home_screen/internal_dashboard.dart';
 import 'package:mprs_android/screens/home_screen/pending_approvals.dart';
 import 'package:mprs_android/screens/marquee_webview.dart';
 import 'package:mprs_android/screens/notification/push_notifi.dart';
@@ -72,6 +73,9 @@ class HomeOverview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (AuthDataHelper.getUserType().toLowerCase().trim() == 'internal') {
+      return InternalDashboard(refreshNonce: refreshNonce);
+    }
     return GetBuilder<BookingController>(
       tag: 'all_bookings',
       builder: (bookings) {

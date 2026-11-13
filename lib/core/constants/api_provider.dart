@@ -334,6 +334,10 @@ class ApiProvider {
     final accountId = _accountId();
 
     if (!isAdmin && accountId.isEmpty) {
+      // Internal users are sales people and are not linked to one account.
+      if (AuthDataHelper.getUserType().toLowerCase().trim() == 'internal') {
+        return DataResponse(success: true, message: '', body: []);
+      }
       return DataResponse(
         message: 'Account id is required',
         success: false,

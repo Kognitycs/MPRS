@@ -409,6 +409,8 @@ import '../screens/home_screen/no_rates_available_screen.dart';
 import '../screens/home_screen/pricebook_results_screen.dart';
 import '../screens/main_screen.dart';
 import '../service/most_used_ports_service.dart';
+import '../model/internal_quote_line_edit.dart';
+import '../service/sales_account_directory.dart';
 
 class SearchRouteController extends GetxController {
   /// Navigator that opened Search Rates (home tab, root from Shipments, etc.).
@@ -465,7 +467,26 @@ class SearchRouteController extends GetxController {
 
   /// Set when create-opportunity succeeds during pricebook search.
   String? lastOpportunityId;
+
+  /// Account chosen on the internal-user Search Rates step.
+  final Rxn<SalesAccountChoice> selectedSalesAccount = Rxn<SalesAccountChoice>();
   String? lastValidTill;
+
+  /// Internal Search Rates → Price step → quote download.
+  List<InternalQuoteLineEdit>? internalQuoteLineEdits;
+  PricebookEntryModel? internalMatchedRateEntry;
+  List<PricebookEntryModel>? internalPricebookEntries;
+  String? internalContainerSize;
+
+  /// Internal user on own profile: search pricebook only (no SF opportunity).
+  bool get shouldCreateOpportunity {
+    if (AuthDataHelper.getUserType().toLowerCase().trim() != 'internal') {
+      return true;
+    }
+    final choice = selectedSalesAccount.value;
+    if (choice == null) return true;
+    return !choice.isSelf;
+  }
 
   static String? parseOpportunityIdFromBody(dynamic body) {
     if (body is! Map) return null;
@@ -726,6 +747,12 @@ class SearchRouteController extends GetxController {
 
   // ─────────────────────────────────────────────
   Future<ApiResponse> createOpportunityApi() async {
+    if (!shouldCreateOpportunity) {
+      lastOpportunityId = null;
+      lastValidTill = null;
+      return ApiResponse(statusCode: 204, data: '{}');
+    }
+
     final origin = selectedOriginPort.value;
     final dest = selectedDestinationPort.value;
 
@@ -734,7 +761,12 @@ class SearchRouteController extends GetxController {
       throw Exception("Invalid port mapping");
     }
 
-    final userid = AuthDataHelper.getAccountId();
+    final choice = selectedSalesAccount.value;
+    final selectedAccount = choice?.accountIdForApi;
+    final userid =
+        (selectedAccount != null && selectedAccount.isNotEmpty)
+            ? selectedAccount
+            : AuthDataHelper.getAccountId();
 
     /// GET STORED VALUES
     final companyName = AuthDataHelper.getCompanyName();
@@ -878,10 +910,21 @@ class SearchRouteController extends GetxController {
 
       print("🌐 URL: $url");
 
-      // 🔥 PARALLEL API CALLS
+      if (!shouldCreateOpportunity) {
+        lastOpportunityId = null;
+        lastValidTill = null;
+        debugPrint(
+          'Pricebook search: skipping opportunity (internal own account)',
+        );
+      }
+
+      final oppFuture = shouldCreateOpportunity
+          ? createOpportunityApi()
+          : Future.value(ApiResponse(statusCode: 204, data: '{}'));
+
       final results = await Future.wait([
         HttpClientHelper.getWithBearer(url, AuthDataHelper.getToken()),
-        createOpportunityApi(),
+        oppFuture,
       ]);
 
       final pricebookResp = results[0] as ApiResponse;
@@ -890,10 +933,10 @@ class SearchRouteController extends GetxController {
       print("📦 Pricebook: ${pricebookResp.data}");
       print("📦 Opportunity: ${oppResp.data}");
 
-      // Extract opportunityId + valid till from create-opportunity response
       String? opportunityId;
       String? validTill;
-      if (oppResp.statusCode == 200 || oppResp.statusCode == 201) {
+      if (shouldCreateOpportunity &&
+          (oppResp.statusCode == 200 || oppResp.statusCode == 201)) {
         final oppBody = jsonDecode(oppResp.data);
         if (oppBody is Map && oppBody['success'] == true) {
           opportunityId = SearchRouteController.parseOpportunityIdFromBody(
@@ -909,6 +952,9 @@ class SearchRouteController extends GetxController {
             "⚠️ Opportunity creation failed: ${oppBody is Map ? oppBody['message'] : oppBody}",
           );
         }
+      } else if (!shouldCreateOpportunity) {
+        opportunityId = null;
+        validTill = null;
       } else {
         print("⚠️ Opportunity API error: ${oppResp.statusCode}");
       }

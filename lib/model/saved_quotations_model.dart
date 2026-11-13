@@ -18,6 +18,7 @@ class SavedQuotationsModel {
   String? expirationDate;
   String? status;
   String? opportunityName;
+  String? opportunityId;
   String? accountName;
   String? accountId;
   /// True when linked Opportunity was created from the RMS app (`opp_from_rms_app`).
@@ -43,6 +44,7 @@ class SavedQuotationsModel {
     this.expirationDate,
     this.status,
     this.opportunityName,
+    this.opportunityId,
     this.accountName,
     this.accountId,
     this.opportunityFromRms,
@@ -152,6 +154,7 @@ class SavedQuotationsModel {
       expirationDate: expirationDate,
       status: status,
       opportunityName: opportunityName,
+      opportunityId: opportunityId,
       accountName: accountName,
       accountId: accountId,
       opportunityFromRms: true,
@@ -162,9 +165,14 @@ class SavedQuotationsModel {
     final opportunity =
         json['Opportunity'] ?? json['Opportunity__r'] ?? json['opportunity'];
     String? opportunityName;
+    String? opportunityId;
     if (opportunity is Map) {
       opportunityName = opportunity['Name']?.toString();
+      opportunityId = _readString(opportunity['Id']);
     }
+    opportunityId ??= _readString(
+      json['OpportunityId'] ?? json['opportunityId'] ?? json['Opportunity__c'],
+    );
 
     String? accountName;
     final account = json['Account'];
@@ -292,6 +300,7 @@ class SavedQuotationsModel {
           json['Expiration_Date__c']?.toString(),
       status: json['Status']?.toString() ?? json['status']?.toString(),
       opportunityName: opportunityName ?? json['opportunityName']?.toString(),
+      opportunityId: opportunityId,
       accountName: accountName,
       accountId: accountId,
       opportunityFromRms: _parseOpportunityFromRms(json, opportunity),
@@ -350,7 +359,11 @@ class SavedQuotationsModel {
         'Origin_Port__r': {'Name': originPortR!.name},
       if (destinationPortR?.name != null)
         'Destination_Port__r': {'Name': destinationPortR!.name},
-      if (opportunityName != null) 'Opportunity': {'Name': opportunityName},
+      if (opportunityName != null || opportunityId != null)
+        'Opportunity': {
+          if (opportunityId != null) 'Id': opportunityId,
+          if (opportunityName != null) 'Name': opportunityName,
+        },
       if (accountName != null) 'Account': {'Name': accountName},
       if (loadType != null) 'Lead_Type__c': loadType,
       if (containerType != null) 'Container_Type__c': containerType,
@@ -383,7 +396,11 @@ class SavedQuotationsModel {
         'Origin_Port__r': {'Name': originPortR!.name},
       if (destinationPortR?.name != null)
         'Destination_Port__r': {'Name': destinationPortR!.name},
-      if (opportunityName != null) 'Opportunity': {'Name': opportunityName},
+      if (opportunityName != null || opportunityId != null)
+        'Opportunity': {
+          if (opportunityId != null) 'Id': opportunityId,
+          if (opportunityName != null) 'Name': opportunityName,
+        },
       if (accountName != null) 'Account': {'Name': accountName},
     };
   }
@@ -515,7 +532,28 @@ class SavedQuotationsModel {
       final id = quote.id!.trim();
       byId[id] = SavedQuotationsModel.merge([byId[id], quote]) ?? quote;
     }
-    return sortNewestFirst(byId.values.toList());
+    return keepLatestPerOpportunity(sortNewestFirst(byId.values.toList()));
+  }
+
+  /// One row per opportunity: the quote with the newest created date.
+  /// Quotes with no opportunity stay as their own rows.
+  static List<SavedQuotationsModel> keepLatestPerOpportunity(
+    List<SavedQuotationsModel> newestFirst,
+  ) {
+    final seen = <String>{};
+    final result = <SavedQuotationsModel>[];
+    for (final quote in newestFirst) {
+      if (seen.add(quote.opportunityGroupKey)) result.add(quote);
+    }
+    return result;
+  }
+
+  String get opportunityGroupKey {
+    final oppId = opportunityId?.trim() ?? '';
+    if (oppId.isNotEmpty) return 'id:$oppId';
+    final name = opportunityName?.trim().toLowerCase() ?? '';
+    if (name.isNotEmpty) return 'name:$name';
+    return 'quote:${id ?? ''}';
   }
 
   /// Latest quotes first (created time descending).
@@ -581,6 +619,7 @@ class SavedQuotationsModel {
         expirationDate: result.expirationDate ?? source.expirationDate,
         status: result.status ?? source.status,
         opportunityName: result.opportunityName ?? source.opportunityName,
+        opportunityId: result.opportunityId ?? source.opportunityId,
         accountName: result.accountName ?? source.accountName,
         accountId: result.accountId ?? source.accountId,
         opportunityFromRms:

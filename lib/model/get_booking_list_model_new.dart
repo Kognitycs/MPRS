@@ -79,6 +79,8 @@ class Records {
 
   dynamic opportunityName;
 
+  dynamic opportunityId;
+
   dynamic accountName;
 
   dynamic createdDate;
@@ -166,6 +168,24 @@ class Records {
       return (b.id?.toString() ?? '').compareTo(a.id?.toString() ?? '');
     });
     return sorted;
+  }
+
+  /// Keeps the newest quote when several quotes share one opportunity.
+  static List<Records> keepLatestPerOpportunity(List<Records> newestFirst) {
+    final seen = <String>{};
+    final result = <Records>[];
+    for (final row in newestFirst) {
+      if (seen.add(row.opportunityGroupKey)) result.add(row);
+    }
+    return result;
+  }
+
+  String get opportunityGroupKey {
+    final oppId = opportunityId?.toString().trim() ?? '';
+    if (oppId.isNotEmpty) return 'id:$oppId';
+    final name = opportunityName?.toString().trim().toLowerCase() ?? '';
+    if (name.isNotEmpty) return 'name:$name';
+    return 'quote:${quoteId ?? id ?? ''}';
   }
 
   /// Newest created or booked time. Expiration is not used, so an older
@@ -295,9 +315,12 @@ class Records {
     final opportunity = json['Opportunity'];
     if (opportunity is Map) {
       opportunityName = opportunity['Name'];
+      opportunityId = opportunity['Id'];
     } else {
       opportunityName = json['Opportunity.Name'];
     }
+    opportunityId ??=
+        json['OpportunityId'] ?? json['opportunityId'] ?? json['Opportunity__c'];
     final account = json['Account'];
     if (account is Map) {
       accountName = account['Name'];

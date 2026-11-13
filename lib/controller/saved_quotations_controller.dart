@@ -104,7 +104,16 @@ class SavedQuotationsController extends GetxController {
       } else {
         quotesList = [];
         quotesLoadFailed = true;
-        Get.snackbar("Error", response.message ?? "Failed to fetch data");
+        final message = response.message?.toString().trim() ?? '';
+        final hideMissingAccount =
+            message.toLowerCase().contains('account id') &&
+            AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
+        if (!hideMissingAccount) {
+          Get.snackbar(
+            "Error",
+            message.isEmpty ? "Failed to fetch data" : message,
+          );
+        }
       }
     } catch (e, stack) {
       debugPrint("❗️ Controller Catch: $e");

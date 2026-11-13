@@ -8,6 +8,7 @@ import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/core/constants/api_constants.dart';
 import 'package:mprs_android/core/constants/app_colors.dart';
 import 'package:mprs_android/core/constants/app_strings.dart';
+import 'package:mprs_android/model/internal_quote_line_edit.dart';
 import 'package:mprs_android/model/pricebook_entry_model.dart'; // ← NEW (line items)
 import 'package:mprs_android/screens/quote/price_calculation.dart';
 import 'package:mprs_android/core/utils/url_launcher_helper.dart';
@@ -33,6 +34,7 @@ class _QuoteLineItem {
   final double finalBuyingPrice;
   final String chargeType; // "Origin Charges" | "Destination Charges" etc.
   final String currency;
+  final double? taxPercent;
 
   const _QuoteLineItem({
     required this.product2Id,
@@ -45,7 +47,48 @@ class _QuoteLineItem {
     required this.finalBuyingPrice,
     required this.chargeType,
     required this.currency,
+    this.taxPercent,
   });
+
+  _QuoteLineItem copyWith({
+    double? unitPrice,
+    double? listPrice,
+    double? finalSellingPrice,
+    double? taxPercent,
+  }) {
+    return _QuoteLineItem(
+      product2Id: product2Id,
+      pricebookEntryId: pricebookEntryId,
+      productName: productName,
+      quantity: quantity,
+      unitPrice: unitPrice ?? this.unitPrice,
+      listPrice: listPrice ?? this.listPrice,
+      finalSellingPrice: finalSellingPrice ?? this.finalSellingPrice,
+      finalBuyingPrice: finalBuyingPrice,
+      chargeType: chargeType,
+      currency: currency,
+      taxPercent: taxPercent ?? this.taxPercent,
+    );
+  }
+
+  static _QuoteLineItem fromInternalEdit(InternalQuoteLineEdit edit) {
+    final sell = edit.sellPrice;
+    final buy = edit.buyPrice;
+    final sendsSellAsUnit = edit.isMarginProduct;
+    return _QuoteLineItem(
+      product2Id: edit.product2Id,
+      pricebookEntryId: edit.pricebookEntryId,
+      productName: edit.productName,
+      quantity: edit.quantity,
+      unitPrice: sendsSellAsUnit ? sell : buy,
+      listPrice: sendsSellAsUnit ? sell : buy,
+      finalSellingPrice: sell,
+      finalBuyingPrice: buy,
+      chargeType: edit.chargeType,
+      currency: edit.currency,
+      taxPercent: edit.taxPercent > 0 ? edit.taxPercent : null,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'Product2Id': product2Id,
@@ -58,6 +101,7 @@ class _QuoteLineItem {
     'finalBuyingPrice': finalBuyingPrice.round(),
     'chargeType': chargeType,
     'currency': currency,
+    if (taxPercent != null) 'Tax__c': taxPercent,
   };
 }
 
@@ -91,6 +135,12 @@ class GetQuoteScreen extends StatefulWidget {
   /// Account margin % already fetched on pricebook screen (optional).
   final double? initialAccountMarginPct;
 
+  /// Internal Search Rates flow: sell/tax already set on Price step.
+  final List<InternalQuoteLineEdit>? preparedLineEdits;
+
+  /// Shown as Search Rates step 5 — no app bar or Route/Rates/Review chips.
+  final bool embeddedInSearchFlow;
+
   const GetQuoteScreen({
     Key? key,
     this.initialPol,
@@ -111,6 +161,8 @@ class GetQuoteScreen extends StatefulWidget {
     this.pricebookEntries,
     this.selectedMloCode,
     this.initialAccountMarginPct,
+    this.preparedLineEdits,
+    this.embeddedInSearchFlow = false,
   }) : super(key: key);
 
   @override
@@ -148,6 +200,10 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
   String? selectedShipmentMode;
   bool acceptedTerms = false;
   bool _isSubmitting = false;
+  double? _confirmedSellTotal;
+
+  bool get _isInternalSalesUser =>
+      AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
   String? polId;
   String? podId;
   List<IcdModel> icdList = [];
@@ -388,6 +444,7 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
 
     if (!Get.isRegistered<SearchRouteController>()) return null;
     final searchCtrl = Get.find<SearchRouteController>();
+    if (!searchCtrl.shouldCreateOpportunity) return null;
 
     try {
       final resp = await searchCtrl.createOpportunityApi();
@@ -473,6 +530,11 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
     final selectedSize = rawSelected.isEmpty ? '' : normalize(rawSelected);
 
     debugPrint("SELECTED SIZE NORMALIZED : $selectedSize");
+
+    final prepared = widget.preparedLineEdits;
+    if (prepared != null && prepared.isNotEmpty) {
+      return prepared.map(_QuoteLineItem.fromInternalEdit).toList();
+    }
 
     final entries =
         allEntries.where((e) {
@@ -579,15 +641,103 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
     return 0.01;
   }
 
+  List<_QuoteLineItem> _applyConfirmedSellPrice(
+    List<_QuoteLineItem> items,
+    double confirmedTotal,
+  ) {
+    if (items.isEmpty) return items;
+    final current = items.fold<double>(
+      0,
+      (sum, line) => sum + line.finalSellingPrice * line.quantity,
+    );
+    if ((confirmedTotal - current).abs() < 0.01) return items;
+
+    _QuoteLineItem priced(_QuoteLineItem line, double sell) {
+      final sendsSellAsUnit =
+          (line.unitPrice - line.finalSellingPrice).abs() < 0.01;
+      return line.copyWith(
+        finalSellingPrice: sell,
+        unitPrice: sendsSellAsUnit ? sell : line.unitPrice,
+        listPrice: sendsSellAsUnit ? sell : line.listPrice,
+      );
+    }
+
+    if (current <= 0) {
+      final firstQty = items.first.quantity <= 0 ? 1 : items.first.quantity;
+      return [priced(items.first, confirmedTotal / firstQty), ...items.skip(1)];
+    }
+
+    var index = items.indexWhere(
+      (line) => line.productName.toUpperCase().contains('OCEAN FREIGHT'),
+    );
+    if (index < 0) index = 0;
+    final line = items[index];
+    final qty = line.quantity <= 0 ? 1 : line.quantity;
+    final others = current - line.finalSellingPrice * qty;
+    if (confirmedTotal < others) {
+      final factor = confirmedTotal / current;
+      return [
+        for (final item in items) priced(item, item.finalSellingPrice * factor),
+      ];
+    }
+    return [
+      for (var i = 0; i < items.length; i++)
+        i == index ? priced(line, (confirmedTotal - others) / qty) : items[i],
+    ];
+  }
+
+  Future<double?> _askSellPrice(double current, String currency) {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final route = DialogRoute<double>(
+      context: context,
+      barrierDismissible: false,
+      builder:
+          (dialogContext) =>
+              _SellPriceDialog(currency: currency, initialPrice: current),
+    );
+    navigator.push(route);
+    // Wait until the dialog has fully closed. Popping this page in the same
+    // moment leaves inherited widgets with dependents and crashes.
+    return route.completed;
+  }
+
+  Future<bool> _onSwipeDownload() async {
+    if (_isInternalSalesUser &&
+        (widget.preparedLineEdits?.isNotEmpty == true)) {
+      return _submitForm();
+    }
+    if (!_isInternalSalesUser) return _submitForm();
+    final preview = _buildLineItems();
+    if (preview.isEmpty) {
+      _snack('No priced lines to quote', Colors.red);
+      return false;
+    }
+    final current = preview.fold<double>(
+      0,
+      (sum, line) => sum + line.finalSellingPrice * line.quantity,
+    );
+    final currency =
+        preview.first.currency.trim().isEmpty ? 'USD' : preview.first.currency;
+    final confirmed = await _askSellPrice(current, currency);
+    if (!mounted) return false;
+    if (confirmed == null) {
+      Navigator.of(context).pop(true);
+      return true;
+    }
+    _confirmedSellTotal = confirmed;
+    return _submitForm();
+  }
+
   // ── Submit ────────────────────────────────────────────────────────────────
-  Future<void> _submitForm() async {
+  Future<bool> _submitForm() async {
     if (!acceptedTerms) {
       _snack('Please accept the terms and conditions', Colors.red);
-      return;
+      return false;
     }
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) return false;
 
     setState(() => _isSubmitting = true);
+    var submitted = false;
 
     try {
       var opportunityId = _resolvedOpportunityId;
@@ -596,12 +746,12 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
       }
       if (opportunityId == null || opportunityId.isEmpty) {
         _snack('Opportunity ID missing', Colors.red);
-        return;
+        return false;
       }
       if (validFromController.text.isEmpty ||
           additionalInfoController.text.isEmpty) {
         _snack('Please fill all required fields', Colors.red);
-        return;
+        return false;
       }
 
       final token = AuthDataHelper.getToken();
@@ -614,7 +764,13 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
           (double.tryParse(weightPerContainerController.text) ?? 0).round();
       final grossWeight = netWeight;
       //Arnima - make not editable fields date and send the data from those fields in payload instead of user input
-      final lineItems = _buildLineItems();
+      final lineItems =
+          _confirmedSellTotal == null
+              ? _buildLineItems()
+              : _applyConfirmedSellPrice(
+                _buildLineItems(),
+                _confirmedSellTotal!,
+              );
       debugPrint('📦 Line items count: ${lineItems.length}');
       final goodsValue = _goodsValueForApi();
 
@@ -629,10 +785,26 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
       final ts = DateTime.now().millisecondsSinceEpoch % 100000;
       final quoteName = 'QT-${ts.toString().padLeft(5, '0')}';
 
+      String? quotedAccountId;
+      if (Get.isRegistered<SearchRouteController>()) {
+        quotedAccountId =
+            Get.find<SearchRouteController>()
+                .selectedSalesAccount
+                .value
+                ?.accountIdForApi;
+      }
+      final quotedTotal = lineItems.fold<double>(
+        0,
+        (sum, line) => sum + line.finalSellingPrice * line.quantity,
+      );
+
       final quotePayload = {
         'quote': {
           'name': quoteName,
           'opportunityId': opportunityId,
+          if (quotedAccountId != null) 'AccountId': quotedAccountId,
+          if (_confirmedSellTotal != null) 'TotalPrice': quotedTotal,
+          if (_confirmedSellTotal != null) 'confirmedSellPrice': quotedTotal,
           if (pricebook2Id != null) 'Pricebook2Id': pricebook2Id,
           if (formattedValidTill != null) 'validTill': formattedValidTill,
           if (formattedValidTill != null) 'valid_till_c': formattedValidTill,
@@ -671,6 +843,7 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
       log('📥 Quote response ${response.statusCode}: ${response.body}');
 
       if (response.statusCode == 200 || response.statusCode == 201) {
+        submitted = true;
         await MostUsedPortsService.recordPortUsage(
           portOfLoading: polController.text.trim(),
           portOfDischarge: podController.text.trim(),
@@ -701,8 +874,9 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
       log('❌ Quote submit error: $e\n$stack');
       _showServiceError();
     } finally {
-      setState(() => _isSubmitting = false);
+      if (mounted) setState(() => _isSubmitting = false);
     }
+    return submitted;
   }
 
   Future<void> _openMasterTerms() async {
@@ -773,61 +947,38 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: CommonAppBar(
-        title: 'Get a Quote',
-        onBack: () async {
-          try {
-            final token = AuthDataHelper.getToken();
-            await http.post(
-              Uri.parse(ApiConstants.createCaseFromRms),
-              headers: AppConfig.mergeApiHeaders({
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer $token',
-              }),
-              body: jsonEncode({
-                'opportunityId': _resolvedOpportunityId,
-                'containerType': selectedContainerType,
-                'containerSize': selectedContainerSize,
-                'commodity':
-                    additionalInfoController.text.trim().isEmpty
-                        ? 'General Cargo'
-                        : additionalInfoController.text.trim(),
-                'originPortId': widget.initialPolId,
-                'destinationPortId': widget.initialPodId,
-              }),
-            );
-          } catch (e) {
-            debugPrint('CASE API ERROR: $e');
-          }
-          if (context.mounted) Navigator.of(context).pop();
-        },
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildFlowSteps(),
-              const Text(
-                'Request a Quote',
-                style: TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF1A1A2E),
-                ),
+  Widget _quoteFormBody() {
+    return Form(
+      key: _formKey,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!widget.embeddedInSearchFlow) _buildFlowSteps(),
+          if (widget.embeddedInSearchFlow)
+            const Text(
+              'Get a Quote',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1C2434),
               ),
-              const SizedBox(height: 4),
-              Text(
-                'Fill in the details below to get your shipping quote',
-                style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            )
+          else ...[
+            const Text(
+              'Request a Quote',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF1A1A2E),
               ),
-              const SizedBox(height: 12),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Fill in the details below to get your shipping quote',
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            ),
+          ],
+          const SizedBox(height: 12),
 
               // ── Personal Information ──────────────────────────────────
               // ── Personal Information ──────────────────────────────────
@@ -1174,13 +1325,55 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
               _SwipeDownloadQuote(
                 enabled: acceptedTerms,
                 busy: _isSubmitting,
-                onConfirmed: _submitForm,
+                onConfirmed: _onSwipeDownload,
               ),
 
               const SizedBox(height: 8),
-            ],
-          ),
-        ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final form = _quoteFormBody();
+    if (widget.embeddedInSearchFlow) {
+      return form;
+    }
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: CommonAppBar(
+        title: 'Get a Quote',
+        onBack: () async {
+          try {
+            final token = AuthDataHelper.getToken();
+            await http.post(
+              Uri.parse(ApiConstants.createCaseFromRms),
+              headers: AppConfig.mergeApiHeaders({
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $token',
+              }),
+              body: jsonEncode({
+                'opportunityId': _resolvedOpportunityId,
+                'containerType': selectedContainerType,
+                'containerSize': selectedContainerSize,
+                'commodity':
+                    additionalInfoController.text.trim().isEmpty
+                        ? 'General Cargo'
+                        : additionalInfoController.text.trim(),
+                'originPortId': widget.initialPolId,
+                'destinationPortId': widget.initialPodId,
+              }),
+            );
+          } catch (e) {
+            debugPrint('CASE API ERROR: $e');
+          }
+          if (context.mounted) Navigator.of(context).pop();
+        },
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 24),
+        child: form,
       ),
     );
   }
@@ -1617,11 +1810,151 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
   }
 }
 
+class _SellPriceDialog extends StatefulWidget {
+  final String currency;
+  final double initialPrice;
+
+  const _SellPriceDialog({required this.currency, required this.initialPrice});
+
+  @override
+  State<_SellPriceDialog> createState() => _SellPriceDialogState();
+}
+
+class _SellPriceDialogState extends State<_SellPriceDialog> {
+  late final TextEditingController _text;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _text = TextEditingController(text: widget.initialPrice.toStringAsFixed(2));
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    final value = double.tryParse(_text.text.replaceAll(',', '').trim());
+    if (value == null || value < 0) {
+      setState(() => _error = 'Enter a valid sell price');
+      return;
+    }
+    Navigator.pop(context, value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppColors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Confirm sell price',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                fontSize: 18,
+                color: Color(0xFF1C2434),
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _text,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              cursorColor: AppColors.main,
+              style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                color: AppColors.main,
+                fontSize: 16,
+              ),
+              decoration: InputDecoration(
+                labelText: 'Sell price (${widget.currency})',
+                labelStyle: const TextStyle(color: AppColors.main),
+                errorText: _error,
+                filled: true,
+                fillColor: AppColors.accentLight,
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: AppColors.main),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(
+                    color: AppColors.main,
+                    width: 1.8,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: TextButton.styleFrom(
+                      backgroundColor: AppColors.lightGrey.withValues(
+                        alpha: 0.25,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(
+                        color: AppColors.black,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _confirm,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.main,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text(
+                      'Confirm',
+                      style: TextStyle(
+                        color: AppColors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// Left-to-right swipe. Stays locked until the terms checkbox is on.
 class _SwipeDownloadQuote extends StatefulWidget {
   final bool enabled;
   final bool busy;
-  final VoidCallback onConfirmed;
+  final Future<bool> Function() onConfirmed;
 
   const _SwipeDownloadQuote({
     required this.enabled,
@@ -1781,10 +2114,14 @@ class _SwipeDownloadQuoteState extends State<_SwipeDownloadQuote>
                                 : null,
                         onHorizontalDragEnd:
                             active
-                                ? (_) {
+                                ? (_) async {
                                   final done = max > 0 && _drag >= max * 0.82;
                                   setState(() => _drag = done ? max : 0);
-                                  if (done) widget.onConfirmed();
+                                  if (!done) return;
+                                  final accepted = await widget.onConfirmed();
+                                  if (!accepted && mounted) {
+                                    setState(() => _drag = 0);
+                                  }
                                 }
                                 : null,
                         child: Container(
