@@ -63,8 +63,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   int _activityRefresh = 0;
+  bool _salesHomeReady = false;
+
+  bool get _isSalesUser =>
+      AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
 
   Future<void> _refreshHome() async {
+    if (_isSalesUser) {
+      // Quotes and bookings are loaded by account id. An internal user has
+      // none, and that request is what shows "Account id is required".
+      if (!_salesHomeReady) {
+        _salesHomeReady = true;
+        return;
+      }
+      if (mounted) setState(() => _activityRefresh++);
+      return;
+    }
     await Future.wait([
       bookingController.getConfirmedBookings(accountScoped: true),
       bookingController.loadTodayBookings(),

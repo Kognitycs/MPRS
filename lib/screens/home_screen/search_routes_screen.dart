@@ -16,7 +16,9 @@ import 'package:mprs_android/screens/quote/price_calculation.dart';
 import 'package:mprs_android/widget/pricebook_entry_card_details.dart';
 import 'package:mprs_android/widget/searchable_dropdown.dart';
 import '../../controller/search_routes_controller.dart';
+import '../../model/internal_quote_line_edit.dart';
 import '../../model/port_model.dart';
+import '../../service/sales_account_directory.dart';
 
 class SearchRouteScreen extends StatefulWidget {
   final bool embedded;
@@ -35,6 +37,28 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   List<PricebookEntryModel>? _selectedMloEntries;
   double? _accountMarginPct;
   bool _marginLoading = false;
+  List<SalesAccountChoice> _salesAccounts = [];
+  bool _salesAccountsLoading = false;
+  String? _selectedSalesAccountId;
+  String _accountSearchQuery = '';
+  final TextEditingController _accountSearchCtrl = TextEditingController();
+
+  bool get _picksAccount =>
+      AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
+
+  int? get _accountStep => _picksAccount ? 0 : null;
+  int get _routeStep => _picksAccount ? 1 : 0;
+  int get _ratesStep => _picksAccount ? 2 : 1;
+  int? get _editPriceStep => _picksAccount ? 3 : null;
+  int? get _getQuoteStep => _picksAccount ? 4 : null;
+  int get _reviewStep => 2;
+
+  List<InternalQuoteLineEdit>? _lineEdits;
+  PricebookEntryModel? _selectedPricebookEntry;
+  String? _selectedContainerSize;
+  List<PricebookEntryModel>? _quotePricebookEntries;
+  final Map<String, TextEditingController> _sellControllers = {};
+  final Map<String, TextEditingController> _taxControllers = {};
 
   static const _pageBg = Colors.white;
   static const _titleColor = Color(0xFF1C2434);
@@ -46,6 +70,118 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
     super.initState();
     controller = Get.put(SearchRouteController());
     WidgetsBinding.instance.addPostFrameCallback((_) => _initializeForm());
+    if (_picksAccount) _loadSalesAccounts();
+  }
+
+  Future<void> _loadSalesAccounts() async {
+    setState(() => _salesAccountsLoading = true);
+    final result = await SalesAccountDirectory.loadForCurrentUser();
+    if (!mounted) return;
+    setState(() {
+      _salesAccounts = result.choices;
+      _salesAccountsLoading = false;
+      _selectedSalesAccountId = null;
+    });
+    controller.selectedSalesAccount.value = null;
+  }
+
+  List<SalesAccountChoice> get _visibleSalesAccounts {
+    final query = _accountSearchQuery.trim().toLowerCase();
+    final self = _salesAccounts.where((c) => c.isSelf);
+    final assigned = _salesAccounts.where((c) => !c.isSelf);
+    if (query.isEmpty) {
+      return [...self, ...assigned];
+    }
+    bool matches(SalesAccountChoice c) => c.name.toLowerCase().contains(query);
+    return [...self.where(matches), ...assigned.where(matches)];
+  }
+
+  @override
+  void dispose() {
+    _accountSearchCtrl.dispose();
+    _disposeLineControllers();
+    super.dispose();
+  }
+
+  void _disposeLineControllers() {
+    for (final c in _sellControllers.values) {
+      c.dispose();
+    }
+    for (final c in _taxControllers.values) {
+      c.dispose();
+    }
+    _sellControllers.clear();
+    _taxControllers.clear();
+  }
+
+  void _syncLineEditsFromControllers() {
+    if (_lineEdits == null) return;
+    for (final line in _lineEdits!) {
+      final sellText = _sellControllers[line.pricebookEntryId]?.text.trim();
+      final taxText = _taxControllers[line.pricebookEntryId]?.text.trim();
+      final sell = double.tryParse(sellText ?? '');
+      if (sell != null) line.sellPrice = sell;
+      final tax = double.tryParse(taxText ?? '');
+      line.taxPercent = tax ?? 0;
+    }
+  }
+
+  double _parsedSellFromField(InternalQuoteLineEdit line) {
+    final text = _sellControllers[line.pricebookEntryId]?.text.trim() ?? '';
+    return double.tryParse(text) ?? line.sellPrice;
+  }
+
+  bool _lineSellBelowBuy(InternalQuoteLineEdit line) {
+    return _parsedSellFromField(line) < line.buyPrice - 0.001;
+  }
+
+  bool get _editPriceCanContinue {
+    if (!_picksAccount || _editPriceStep == null || _step != _editPriceStep) {
+      return true;
+    }
+    if (_lineEdits == null || _lineEdits!.isEmpty) return false;
+    return _lineEdits!.every((line) => !_lineSellBelowBuy(line));
+  }
+
+  void _primeLineEditControllers(List<InternalQuoteLineEdit> lines) {
+    _disposeLineControllers();
+    _lineEdits = lines;
+    for (final line in lines) {
+      _sellControllers[line.pricebookEntryId] = TextEditingController(
+        text:
+            line.sellPrice == line.sellPrice.roundToDouble()
+                ? line.sellPrice.round().toString()
+                : line.sellPrice.toStringAsFixed(2),
+      );
+      _taxControllers[line.pricebookEntryId] = TextEditingController(
+        text: line.taxPercent > 0 ? line.taxPercent.toString() : '',
+      );
+    }
+  }
+
+  void _continueFromEditPrice() {
+    if (!_editPriceCanContinue) return;
+    _syncLineEditsFromControllers();
+    controller.internalQuoteLineEdits = List<InternalQuoteLineEdit>.from(
+      _lineEdits!,
+    );
+    controller.internalMatchedRateEntry = _selectedPricebookEntry;
+    controller.internalPricebookEntries = _quotePricebookEntries;
+    controller.internalContainerSize = _selectedContainerSize;
+    setState(() => _step = _getQuoteStep!);
+  }
+
+  void _continueFromAccount() {
+    SalesAccountChoice? selected;
+    for (final choice in _salesAccounts) {
+      if (choice.id == _selectedSalesAccountId) selected = choice;
+    }
+    if (selected == null) {
+      Get.snackbar('Required', 'Please select an account');
+      return;
+    }
+    controller.selectedSalesAccount.value = selected;
+    setState(() => _step = _routeStep);
   }
 
   void _initializeForm() {
@@ -84,7 +220,7 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
     if (!mounted || !found) return;
     setState(() {
       _selectedMloEntries = null;
-      _step = 1;
+      _step = _ratesStep;
       _marginLoading = true;
     });
     final margin = await _fetchAccountMargin();
@@ -96,11 +232,12 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   }
 
   void _goToReview() {
+    if (_picksAccount) return;
     if (_selectedMloEntries == null || _selectedMloEntries!.isEmpty) {
       Get.snackbar('Required', 'Please select a rate');
       return;
     }
-    setState(() => _step = 2);
+    setState(() => _step = _reviewStep);
   }
 
   void _goBack() {
@@ -142,39 +279,47 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       controller.bindFlowNavigator(Navigator.of(context));
     }
     final body = Obx(
-        () => Stack(
-          children: [
-            ColoredBox(
-              color: _pageBg,
-              child: Column(
-                children: [
-                  Expanded(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _buildIntro(),
-                          const SizedBox(height: 18),
-                          _buildStepper(),
-                          const SizedBox(height: 18),
-                          if (_step == 0)
-                            _buildRouteStep()
-                          else if (_step == 1)
-                            _buildRatesStep()
-                          else
-                            _buildReviewStep(),
-                        ],
-                      ),
+      () => Stack(
+        children: [
+          ColoredBox(
+            color: _pageBg,
+            child: Column(
+              children: [
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildIntro(),
+                        const SizedBox(height: 18),
+                        _buildStepper(),
+                        const SizedBox(height: 18),
+                        if (_step == _accountStep)
+                          _buildAccountStep()
+                        else if (_step == _routeStep)
+                          _buildRouteStep()
+                        else if (_step == _ratesStep)
+                          _buildRatesStep()
+                        else if (_editPriceStep != null &&
+                            _step == _editPriceStep)
+                          _buildEditPriceStep()
+                        else if (_getQuoteStep != null &&
+                            _step == _getQuoteStep)
+                          _buildInternalGetQuoteStep()
+                        else if (_step == _reviewStep)
+                          _buildReviewStep(),
+                      ],
                     ),
                   ),
-                  _buildBottomBar(),
-                ],
-              ),
+                ),
+                _buildBottomBar(),
+              ],
             ),
-            if (controller.isPortsLoading.value) _buildLoadingOverlay(),
-          ],
-        ),
+          ),
+          if (controller.isPortsLoading.value) _buildLoadingOverlay(),
+        ],
+      ),
     );
 
     if (widget.embedded) {
@@ -244,7 +389,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   }
 
   Widget _buildStepper() {
-    const labels = ['Route', 'Rates', 'Review'];
+    final labels =
+        _picksAccount
+            ? const ['Account', 'Route', 'Rates', 'Price', 'Get a quote']
+            : const ['Route', 'Rates', 'Review'];
     return Row(
       children: [
         for (var i = 0; i < labels.length; i++) ...[
@@ -273,9 +421,25 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       onTap: () {
         if (index < _step) {
           setState(() => _step = index);
-        } else if (index == 1 && _step == 0) {
+        } else if (_accountStep != null &&
+            index == _routeStep &&
+            _step == _accountStep) {
+          _continueFromAccount();
+        } else if (index == _ratesStep && _step == _routeStep) {
           _continueFromRoute();
-        } else if (index == 2 && _step == 1) {
+        } else if (_editPriceStep != null &&
+            index == _editPriceStep &&
+            _step == _ratesStep) {
+          if (_selectedMloEntries == null || _selectedMloEntries!.isEmpty) {
+            Get.snackbar('Required', 'Please select a rate');
+          } else {
+            _openPriceSheet(_selectedMloEntries!);
+          }
+        } else if (_getQuoteStep != null &&
+            index == _getQuoteStep &&
+            _step == _editPriceStep) {
+          _continueFromEditPrice();
+        } else if (index == _reviewStep && _step == _ratesStep) {
           _goToReview();
         }
       },
@@ -328,10 +492,131 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
             shape: BoxShape.circle,
             border: Border.all(color: AppColors.main, width: 1.4),
           ),
-          child: Icon(
-            Icons.swap_vert,
-            color: AppColors.main,
-            size: 20,
+          child: Icon(Icons.swap_vert, color: AppColors.main, size: 20),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAccountStep() {
+    final visible = _visibleSalesAccounts;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Select account',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: _titleColor,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Choose the account this rate search is for.',
+          style: TextStyle(fontSize: 13, color: _muted, height: 1.35),
+        ),
+        const SizedBox(height: 14),
+        TextField(
+          controller: _accountSearchCtrl,
+          onChanged: (value) => setState(() => _accountSearchQuery = value),
+          decoration: InputDecoration(
+            hintText: 'Search accounts',
+            hintStyle: const TextStyle(color: _muted, fontSize: 14),
+            prefixIcon: const Icon(Icons.search, color: _muted, size: 22),
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 12,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: _cardBorder),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: AppColors.main, width: 1.4),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (_salesAccountsLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (visible.isEmpty && _accountSearchQuery.trim().isNotEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Text(
+              'No accounts match your search.',
+              style: TextStyle(fontSize: 13, color: _muted),
+            ),
+          )
+        else
+          ...visible.map(_accountTile),
+      ],
+    );
+  }
+
+  Widget _accountTile(SalesAccountChoice choice) {
+    final selected = choice.id == _selectedSalesAccountId;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: selected ? const Color(0xFFF3F7FF) : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () {
+            setState(() => _selectedSalesAccountId = choice.id);
+            controller.selectedSalesAccount.value = choice;
+            if (choice.isSelf) {
+              controller.lastOpportunityId = null;
+              controller.lastValidTill = null;
+            }
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: selected ? AppColors.main : _cardBorder,
+                width: selected ? 1.4 : 1,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  selected
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  color: selected ? AppColors.main : _muted,
+                  size: 22,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        choice.name,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: _titleColor,
+                        ),
+                      ),
+                      if (choice.isSelf)
+                        const Text(
+                          'You',
+                          style: TextStyle(fontSize: 12, color: _muted),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -479,7 +764,8 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       return a.containerSize.compareTo(b.containerSize);
     });
     final first = sorted.first;
-    final selected = _selectedMloEntries != null &&
+    final selected =
+        _selectedMloEntries != null &&
         _selectedMloEntries!.isNotEmpty &&
         _selectedMloEntries!.first.mloCode == mloCode;
     final origin = _portName(controller.selectedOriginPort.value);
@@ -589,9 +875,7 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
                     const SizedBox(height: 10),
                     Row(
                       children: [
-                        Expanded(
-                          child: _metaTile('Transit Time', transit),
-                        ),
+                        Expanded(child: _metaTile('Transit Time', transit)),
                         const SizedBox(width: 8),
                         Expanded(child: _metaTile('MLO', mlo)),
                         const SizedBox(width: 8),
@@ -599,9 +883,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
                           child: _metaTile(
                             'Routing',
                             isDirect ? 'Direct' : routing,
-                            valueColor: isDirect
-                                ? const Color(0xFF15803D)
-                                : const Color(0xFFC2410C),
+                            valueColor:
+                                isDirect
+                                    ? const Color(0xFF15803D)
+                                    : const Color(0xFFC2410C),
                           ),
                         ),
                       ],
@@ -733,10 +1018,257 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
     return buffer.toString();
   }
 
+  Widget _buildEditPriceStep() {
+    final lines = _lineEdits ?? [];
+    final hasInvalidSell = lines.any(_lineSellBelowBuy);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Edit Quote Line Item',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: _titleColor,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Adjust sell price and tax for each charge',
+          style: TextStyle(fontSize: 13, color: _muted),
+        ),
+        const SizedBox(height: 14),
+        if (lines.isEmpty)
+          const Text(
+            'Select a rate and container size first.',
+            style: TextStyle(fontSize: 13, color: _muted),
+          )
+        else ...[
+          for (final line in lines) _buildEditPriceRow(line),
+          if (hasInvalidSell)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'Sell price must be at or above the buy price for every line.',
+                style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildEditPriceMetaChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F7FB),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _cardBorder),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: _titleColor,
+        ),
+      ),
+    );
+  }
+
+  InputDecoration _editPriceFieldDecoration({
+    required String hint,
+    bool hasError = false,
+  }) {
+    final borderColor = hasError ? Colors.red.shade400 : _cardBorder;
+    return InputDecoration(
+      hintText: hint,
+      hintStyle: const TextStyle(color: _muted, fontSize: 14),
+      filled: true,
+      fillColor: Colors.white,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(color: borderColor),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(
+          color: hasError ? Colors.red.shade400 : AppColors.main,
+          width: 1.4,
+        ),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(color: Colors.red.shade400),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: BorderSide(color: Colors.red.shade400, width: 1.4),
+      ),
+    );
+  }
+
+  Widget _buildEditPriceRow(InternalQuoteLineEdit line) {
+    final sellCtrl = _sellControllers[line.pricebookEntryId];
+    final taxCtrl = _taxControllers[line.pricebookEntryId];
+    if (sellCtrl == null || taxCtrl == null) return const SizedBox.shrink();
+    final belowBuy = _lineSellBelowBuy(line);
+    final buyLabel = '${line.currency} ${_formatPrice(line.buyPrice)}';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: belowBuy ? Colors.red.shade300 : _cardBorder,
+            width: belowBuy ? 1.4 : 1,
+          ),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x0A000000),
+              blurRadius: 6,
+              offset: Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              line.productName,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+                color: _titleColor,
+                height: 1.25,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildEditPriceMetaChip('Qty ${line.quantity}'),
+                _buildEditPriceMetaChip(line.currency),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Buy price',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: _muted,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 13,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7FAFF),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFFD6E4FF)),
+                        ),
+                        child: Text(
+                          buyLabel,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: _titleColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Sell price',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: _muted,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: sellCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: belowBuy ? Colors.red.shade700 : _titleColor,
+                        ),
+                        decoration: _editPriceFieldDecoration(
+                          hint: 'Enter sell price',
+                          hasError: belowBuy,
+                        ),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Tax (%)',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: _muted,
+              ),
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              controller: taxCtrl,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: _titleColor,
+              ),
+              decoration: _editPriceFieldDecoration(
+                hint: 'Optional',
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildReviewStep() {
-    final selected = _selectedMloEntries?.isNotEmpty == true
-        ? _selectedMloEntries!.first
-        : null;
+    final selected =
+        _selectedMloEntries?.isNotEmpty == true
+            ? _selectedMloEntries!.first
+            : null;
     final sizes = (_selectedMloEntries ?? [])
         .map((e) => e.containerSize)
         .where((s) => s.isNotEmpty)
@@ -759,10 +1291,7 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
         ),
         const SizedBox(height: 16),
         _reviewCard('Route', [
-          _reviewLine(
-            'Origin',
-            _portName(controller.selectedOriginPort.value),
-          ),
+          _reviewLine('Origin', _portName(controller.selectedOriginPort.value)),
           _reviewLine(
             'Destination',
             _portName(controller.selectedDestinationPort.value),
@@ -794,9 +1323,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
         ]),
         const SizedBox(height: 12),
         _reviewCard('Selected rate', [
-          _reviewLine('MLO', selected?.mloCode.isNotEmpty == true
-              ? selected!.mloCode
-              : 'N/A'),
+          _reviewLine(
+            'MLO',
+            selected?.mloCode.isNotEmpty == true ? selected!.mloCode : 'N/A',
+          ),
           _reviewLine(
             'Routing',
             selected == null
@@ -885,19 +1415,20 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       );
       if (response.statusCode != 200) return null;
       final decoded = jsonDecode(response.body);
-      final data = (decoded is Map && decoded['data'] is Map)
-          ? decoded['data'] as Map
-          : (decoded is Map &&
-                decoded['data'] is List &&
-                (decoded['data'] as List).isNotEmpty)
-          ? (decoded['data'] as List).first as Map
-          : decoded is Map
-          ? decoded
-          : <String, dynamic>{};
+      final data =
+          (decoded is Map && decoded['data'] is Map)
+              ? decoded['data'] as Map
+              : (decoded is Map &&
+                  decoded['data'] is List &&
+                  (decoded['data'] as List).isNotEmpty)
+              ? (decoded['data'] as List).first as Map
+              : decoded is Map
+              ? decoded
+              : <String, dynamic>{};
       final record =
           (data['records'] is List && (data['records'] as List).isNotEmpty)
-          ? (data['records'] as List).first as Map
-          : data;
+              ? (data['records'] as List).first as Map
+              : data;
       final raw =
           record['Account_Margin__c'] ??
           record['Account_Margin'] ??
@@ -922,102 +1453,205 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
     _openPriceSheet(entries);
   }
 
+  Widget _buildInternalGetQuoteStep() {
+    final matched =
+        controller.internalMatchedRateEntry ?? _selectedPricebookEntry;
+    final bundle =
+        controller.internalPricebookEntries ?? _quotePricebookEntries;
+    final edits = controller.internalQuoteLineEdits ?? _lineEdits;
+    if (matched == null || bundle == null || edits == null || edits.isEmpty) {
+      return const Text(
+        'Complete the Price step to get a quote.',
+        style: TextStyle(fontSize: 13, color: _muted),
+      );
+    }
+    final pol = _portName(controller.selectedOriginPort.value);
+    final pod = _portName(controller.selectedDestinationPort.value);
+    final originPort = controller.allPorts.firstWhere(
+      (p) => p.name == pol,
+      orElse: () => PortModel(),
+    );
+    final destPort = controller.allPorts.firstWhere(
+      (p) => p.name == pod,
+      orElse: () => PortModel(),
+    );
+    final mappedLoadType =
+        controller.selectedMode.value.toLowerCase() == 'air' ? 'AIR' : 'FCL';
+
+    return GetQuoteScreen(
+      key: ValueKey(
+        '${matched.id}_${controller.internalContainerSize ?? _selectedContainerSize}',
+      ),
+      embeddedInSearchFlow: true,
+      selectedMloCode: matched.mloCode,
+      initialPol: pol,
+      initialPod: pod,
+      initialPolId: originPort.portId,
+      initialPodId: destPort.portId,
+      initialLoadType: mappedLoadType,
+      initialShipmentMode: controller.selectedMode.value,
+      initialContainerType: matched.containerType,
+      initialContainerSize:
+          controller.internalContainerSize ??
+          _selectedContainerSize ??
+          matched.containerSize,
+      initialContainerQuantity: controller.quantityCtrl.text.trim(),
+      initialWeightPerContainer: controller.weightCtrl.text.trim(),
+      initialGoodsValue: controller.cargoValueCtrl.text.trim(),
+      opportunityId: controller.lastOpportunityId,
+      pricebookEntries: bundle,
+      initialAccountMarginPct: _accountMarginPct,
+      initialCommodity: controller.commodityCtrl.text,
+      initialValidFrom: controller.validFromDate.value,
+      initialValidTill: controller.lastValidTill,
+      preparedLineEdits: List<InternalQuoteLineEdit>.from(edits),
+    );
+  }
+
   void _openPriceSheet(List<PricebookEntryModel> entries) {
     if (entries.isEmpty) return;
     final first = entries.first;
     final mloCode = first.mloCode;
-    final allForMlo = controller.lastSearchAllRecords
-        .where((e) => e.mloCode == mloCode)
-        .toList();
-    final uniqueSizes = entries
-        .map((e) => e.containerSize)
-        .where((s) => s.isNotEmpty)
-        .toSet()
-        .toList();
+    final allForMlo =
+        controller.lastSearchAllRecords
+            .where((e) => e.mloCode == mloCode)
+            .toList();
+    final uniqueSizes =
+        entries
+            .map((e) => e.containerSize)
+            .where((s) => s.isNotEmpty)
+            .toSet()
+            .toList();
     final pol = _portName(controller.selectedOriginPort.value);
     final pod = _portName(controller.selectedDestinationPort.value);
 
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => ContainerSizeSelectionScreen(
-        origin: pol,
-        destination: pod,
-        routing: PricebookEntryCardDetails.routingLabel(first),
-        transitTime: PricebookEntryCardDetails.transitLabel(first),
-        unitPrice: first.unitPrice,
-        availableSizes: uniqueSizes,
-        pricebookEntries: allForMlo.isNotEmpty ? allForMlo : entries,
-        containerType: first.containerType.isNotEmpty
-            ? first.containerType
-            : controller.containerType,
-        numberOfContainers: int.tryParse(controller.quantityCtrl.text.trim()),
-        netWeightPerContainer: double.tryParse(
-          controller.weightCtrl.text.trim(),
-        ),
-        userType: AuthDataHelper.getUserType(),
-        accountMarginPct: _accountMarginPct,
-        onConfirm: (selectedContainerString) {
-          final matched = entries.firstWhere(
-            (e) => selectedContainerString?.contains(e.containerSize) == true,
-            orElse: () => first,
-          );
-          final mappedLoadType =
-              controller.selectedMode.value.toLowerCase() == 'air'
-              ? 'AIR'
-              : 'FCL';
-          final originPort = controller.allPorts.firstWhere(
-            (p) => p.name == pol,
-            orElse: () => PortModel(),
-          );
-          final destPort = controller.allPorts.firstWhere(
-            (p) => p.name == pod,
-            orElse: () => PortModel(),
-          );
-
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => GetQuoteScreen(
-                selectedMloCode: matched.mloCode,
-                initialPol: pol,
-                initialPod: pod,
-                initialPolId: originPort.portId,
-                initialPodId: destPort.portId,
-                initialLoadType: mappedLoadType,
-                initialShipmentMode: controller.selectedMode.value,
-                initialContainerType: matched.containerType,
-                initialContainerSize: matched.containerSize,
-                initialContainerQuantity: controller.quantityCtrl.text.trim(),
-                initialWeightPerContainer: controller.weightCtrl.text.trim(),
-                initialGoodsValue: controller.cargoValueCtrl.text.trim(),
-                opportunityId: controller.lastOpportunityId,
-                pricebookEntries: allForMlo.isNotEmpty ? allForMlo : entries,
-                initialAccountMarginPct: _accountMarginPct,
-                initialCommodity: controller.commodityCtrl.text,
-                initialValidFrom: controller.validFromDate.value,
-                initialValidTill: controller.lastValidTill,
-              ),
+      builder:
+          (_) => ContainerSizeSelectionScreen(
+            origin: pol,
+            destination: pod,
+            routing: PricebookEntryCardDetails.routingLabel(first),
+            transitTime: PricebookEntryCardDetails.transitLabel(first),
+            unitPrice: first.unitPrice,
+            availableSizes: uniqueSizes,
+            pricebookEntries: allForMlo.isNotEmpty ? allForMlo : entries,
+            containerType:
+                first.containerType.isNotEmpty
+                    ? first.containerType
+                    : controller.containerType,
+            numberOfContainers: int.tryParse(
+              controller.quantityCtrl.text.trim(),
             ),
-          );
-        },
-      ),
+            netWeightPerContainer: double.tryParse(
+              controller.weightCtrl.text.trim(),
+            ),
+            userType: AuthDataHelper.getUserType(),
+            accountMarginPct: _accountMarginPct,
+            onConfirm: (selectedContainerString) async {
+              final matched = entries.firstWhere(
+                (e) =>
+                    selectedContainerString?.contains(e.containerSize) == true,
+                orElse: () => first,
+              );
+              if (_picksAccount) {
+                final sizeLabel =
+                    selectedContainerString?.trim().isNotEmpty == true
+                        ? selectedContainerString!.trim()
+                        : matched.containerSize;
+                final qty =
+                    int.tryParse(controller.quantityCtrl.text.trim()) ?? 1;
+                final pricebook = allForMlo.isNotEmpty ? allForMlo : entries;
+                final edits = buildInternalQuoteLineEdits(
+                  allEntries: pricebook,
+                  selectedContainerSize: sizeLabel,
+                  quantity: qty,
+                  userType: AuthDataHelper.getUserType(),
+                  accountMarginPct: _accountMarginPct,
+                );
+                if (!mounted) return;
+                setState(() {
+                  _selectedPricebookEntry = matched;
+                  _selectedContainerSize = sizeLabel;
+                  _quotePricebookEntries = pricebook;
+                  _primeLineEditControllers(edits);
+                  _step = _editPriceStep!;
+                });
+                return;
+              }
+
+              final mappedLoadType =
+                  controller.selectedMode.value.toLowerCase() == 'air'
+                      ? 'AIR'
+                      : 'FCL';
+              final originPort = controller.allPorts.firstWhere(
+                (p) => p.name == pol,
+                orElse: () => PortModel(),
+              );
+              final destPort = controller.allPorts.firstWhere(
+                (p) => p.name == pod,
+                orElse: () => PortModel(),
+              );
+
+              final backToPreviousStep = await Navigator.push<bool>(
+                context,
+                MaterialPageRoute<bool>(
+                  builder:
+                      (_) => GetQuoteScreen(
+                        selectedMloCode: matched.mloCode,
+                        initialPol: pol,
+                        initialPod: pod,
+                        initialPolId: originPort.portId,
+                        initialPodId: destPort.portId,
+                        initialLoadType: mappedLoadType,
+                        initialShipmentMode: controller.selectedMode.value,
+                        initialContainerType: matched.containerType,
+                        initialContainerSize: matched.containerSize,
+                        initialContainerQuantity:
+                            controller.quantityCtrl.text.trim(),
+                        initialWeightPerContainer:
+                            controller.weightCtrl.text.trim(),
+                        initialGoodsValue:
+                            controller.cargoValueCtrl.text.trim(),
+                        opportunityId: controller.lastOpportunityId,
+                        pricebookEntries:
+                            allForMlo.isNotEmpty ? allForMlo : entries,
+                        initialAccountMarginPct: _accountMarginPct,
+                        initialCommodity: controller.commodityCtrl.text,
+                        initialValidFrom: controller.validFromDate.value,
+                        initialValidTill: controller.lastValidTill,
+                      ),
+                ),
+              );
+              if (!mounted || backToPreviousStep != true) return;
+              setState(() => _step = _ratesStep);
+            },
+          ),
     );
   }
 
   Widget _buildBottomBar() {
-    if (_step == 1) return const SizedBox.shrink();
-    final searching = controller.isSearchingPricebook.value;
-    final String label;
-    final VoidCallback? action;
-    switch (_step) {
-      case 0:
-        label = 'Continue';
-        action = _continueFromRoute;
-      default:
-        label = 'Continue';
-        action = _continueFromReview;
+    if (_step == _ratesStep) return const SizedBox.shrink();
+    if (_getQuoteStep != null && _step == _getQuoteStep) {
+      return const SizedBox.shrink();
     }
+    final searching = controller.isSearchingPricebook.value;
+    final String label = 'Continue';
+    final VoidCallback? action =
+        _step == _accountStep
+            ? _continueFromAccount
+            : _step == _routeStep
+            ? _continueFromRoute
+            : (_editPriceStep != null && _step == _editPriceStep)
+            ? _continueFromEditPrice
+            : _continueFromReview;
+    final bool accountContinueBlocked =
+        _step == _accountStep && _selectedSalesAccountId == null;
+    final bool editPriceBlocked =
+        _editPriceStep != null &&
+        _step == _editPriceStep &&
+        !_editPriceCanContinue;
     return Container(
       color: _pageBg,
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
@@ -1029,43 +1663,52 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
               width: double.infinity,
               height: 52,
               child: ElevatedButton(
-                onPressed: searching ? null : action,
+                onPressed:
+                    searching || accountContinueBlocked || editPriceBlocked
+                        ? null
+                        : action,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.main,
-                  disabledBackgroundColor: AppColors.main.withValues(alpha: 0.6),
+                  disabledBackgroundColor: editPriceBlocked
+                      ? const Color(0xFFD0D5DD)
+                      : AppColors.main.withValues(alpha: 0.6),
+                  disabledForegroundColor: editPriceBlocked
+                      ? const Color(0xFF98A2B3)
+                      : Colors.white.withValues(alpha: 0.9),
                   elevation: 0,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
                   ),
                 ),
-                child: searching
-                    ? const SizedBox(
-                        height: 22,
-                        width: 22,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 2,
-                        ),
-                      )
-                    : Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            label,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 16,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          const Icon(
-                            Icons.arrow_forward,
+                child:
+                    searching
+                        ? const SizedBox(
+                          height: 22,
+                          width: 22,
+                          child: CircularProgressIndicator(
                             color: Colors.white,
-                            size: 18,
+                            strokeWidth: 2,
                           ),
-                        ],
-                      ),
+                        )
+                        : Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              label,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Icon(
+                              Icons.arrow_forward,
+                              color: Colors.white,
+                              size: 18,
+                            ),
+                          ],
+                        ),
               ),
             ),
             const SizedBox(height: 10),
@@ -1108,13 +1751,14 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
           }
         });
       },
-      triggerBuilder: (context, _) => _portCardBody(
-        caption: caption,
-        port: port,
-        emptyHint: emptyHint,
-        hasError: hasError,
-        errorText: errorText,
-      ),
+      triggerBuilder:
+          (context, _) => _portCardBody(
+            caption: caption,
+            port: port,
+            emptyHint: emptyHint,
+            hasError: hasError,
+            errorText: errorText,
+          ),
     );
   }
 
@@ -1331,37 +1975,37 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
     );
   }
 
-
   Widget _buildSectionTitle(String title, {bool isRequired = false}) => Padding(
     padding: const EdgeInsets.only(bottom: 8.0),
-    child: isRequired
-        ? RichText(
-            text: TextSpan(
+    child:
+        isRequired
+            ? RichText(
+              text: TextSpan(
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Colors.indigo,
+                ),
+                children: [
+                  TextSpan(text: title),
+                  const TextSpan(
+                    text: ' *',
+                    style: TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            )
+            : Text(
+              title,
               style: const TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 15,
                 color: Colors.indigo,
               ),
-              children: [
-                TextSpan(text: title),
-                const TextSpan(
-                  text: ' *',
-                  style: TextStyle(
-                    color: Colors.red,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
             ),
-          )
-        : Text(
-            title,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 15,
-              color: Colors.indigo,
-            ),
-          ),
   );
   Widget buildInputField({
     required String label,
@@ -1387,26 +2031,27 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
             inputFormatters: inputFormatters,
             onChanged: onChanged,
             decoration: InputDecoration(
-              label: isRequired
-                  ? RichText(
-                      text: TextSpan(
-                        style: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontSize: 16,
-                        ),
-                        children: [
-                          TextSpan(text: label),
-                          const TextSpan(
-                            text: ' *',
-                            style: TextStyle(
-                              color: Colors.red,
-                              fontWeight: FontWeight.w600,
-                            ),
+              label:
+                  isRequired
+                      ? RichText(
+                        text: TextSpan(
+                          style: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontSize: 16,
                           ),
-                        ],
-                      ),
-                    )
-                  : null,
+                          children: [
+                            TextSpan(text: label),
+                            const TextSpan(
+                              text: ' *',
+                              style: TextStyle(
+                                color: Colors.red,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                      : null,
               labelText: isRequired ? null : label,
               hintText: hint,
               hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 14),
@@ -1453,8 +2098,11 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       ),
     );
   }
+
   Widget _buildCommodityField(
-      SearchRouteController controller, BuildContext context) {
+    SearchRouteController controller,
+    BuildContext context,
+  ) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 15),
       child: Column(
@@ -1492,9 +2140,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
                                 : controller.commodityDisplay.value,
                             style: TextStyle(
                               fontSize: 13,
-                              color: controller.commodityDisplay.value.isEmpty
-                                  ? Colors.grey
-                                  : Colors.black87,
+                              color:
+                                  controller.commodityDisplay.value.isEmpty
+                                      ? Colors.grey
+                                      : Colors.black87,
                             ),
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
@@ -1527,18 +2176,21 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   }
 
   void _showCommodityPicker(
-      BuildContext context, SearchRouteController controller) {
+    BuildContext context,
+    SearchRouteController controller,
+  ) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _CommodityPickerSheet(
-        onSelected: (hsCode) {
-          controller.commodityCtrl.text = hsCode;
-          controller.commodityDisplay.value = hsCode;
-          controller.commodityError.value = null;
-        },
-      ),
+      builder:
+          (_) => _CommodityPickerSheet(
+            onSelected: (hsCode) {
+              controller.commodityCtrl.text = hsCode;
+              controller.commodityDisplay.value = hsCode;
+              controller.commodityError.value = null;
+            },
+          ),
     );
   }
 
@@ -1613,20 +2265,17 @@ class _CommodityPickerSheetState extends State<_CommodityPickerSheet> {
       final token = AuthDataHelper.getToken();
       final nextPage = reset ? 1 : _page + 1;
       final query = Uri.encodeComponent(_searchCtrl.text.trim());
-      final url =
-          '${ApiConstants.commodities}?page=$nextPage&name=$query';
+      final url = '${ApiConstants.commodities}?page=$nextPage&name=$query';
 
       final response = await http.get(
         Uri.parse(url),
-        headers: AppConfig.mergeApiHeaders({
-          'Authorization': 'Bearer $token',
-        }),
+        headers: AppConfig.mergeApiHeaders({'Authorization': 'Bearer $token'}),
       );
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
-        final data = (body['data'] as List<dynamic>? ?? [])
-            .cast<Map<String, dynamic>>();
+        final data =
+            (body['data'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
         final meta = body['meta'] as Map<String, dynamic>?;
 
         setState(() {
@@ -1691,47 +2340,58 @@ class _CommodityPickerSheetState extends State<_CommodityPickerSheet> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: StatefulBuilder(
-              builder: (_, ss) => TextField(
-                controller: _searchCtrl,
-                onChanged: (v) {
-                  ss(() {});
-                  _onSearchChanged(v);
-                },
-                decoration: InputDecoration(
-                  hintText: 'Search by HS code or description...',
-                  hintStyle:
-                  TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                  prefixIcon: Icon(Icons.search,
-                      color: Colors.grey.shade400, size: 20),
-                  suffixIcon: _searchCtrl.text.isNotEmpty
-                      ? IconButton(
-                    icon: const Icon(Icons.clear, size: 18),
-                    onPressed: () {
-                      _searchCtrl.clear();
+              builder:
+                  (_, ss) => TextField(
+                    controller: _searchCtrl,
+                    onChanged: (v) {
                       ss(() {});
-                      _fetch(reset: true);
+                      _onSearchChanged(v);
                     },
-                  )
-                      : null,
-                  filled: true,
-                  fillColor: Colors.grey.shade50,
-                  contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 10),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey.shade200),
+                    decoration: InputDecoration(
+                      hintText: 'Search by HS code or description...',
+                      hintStyle: TextStyle(
+                        color: Colors.grey.shade400,
+                        fontSize: 13,
+                      ),
+                      prefixIcon: Icon(
+                        Icons.search,
+                        color: Colors.grey.shade400,
+                        size: 20,
+                      ),
+                      suffixIcon:
+                          _searchCtrl.text.isNotEmpty
+                              ? IconButton(
+                                icon: const Icon(Icons.clear, size: 18),
+                                onPressed: () {
+                                  _searchCtrl.clear();
+                                  ss(() {});
+                                  _fetch(reset: true);
+                                },
+                              )
+                              : null,
+                      filled: true,
+                      fillColor: Colors.grey.shade50,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey.shade200),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.grey.shade200),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(
+                          color: AppColors.main,
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
                   ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey.shade200),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide:
-                    const BorderSide(color: AppColors.main, width: 1.5),
-                  ),
-                ),
-              ),
             ),
           ),
 
@@ -1740,50 +2400,62 @@ class _CommodityPickerSheetState extends State<_CommodityPickerSheet> {
 
           // List
           Expanded(
-            child: _items.isEmpty && _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _items.isEmpty
-                ? Center(
-              child: Text(
-                'No commodities found',
-                style: TextStyle(color: Colors.grey.shade500),
-              ),
-            )
-                : ListView.separated(
-              controller: _scrollCtrl,
-              padding: const EdgeInsets.only(bottom: 24),
-              itemCount: _items.length + (_isLoading ? 1 : 0),
-              separatorBuilder: (_, __) =>
-              const Divider(height: 1, indent: 16, endIndent: 16),
-              itemBuilder: (ctx, i) {
-                if (i == _items.length) {
-                  return const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Center(
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2)),
-                  );
-                }
-                final item = _items[i];
-                final hsCode = item['HS_Code__c'] as String? ?? '';
-                return ListTile(
-                  title: Text(
-                    hsCode,
-                    style: const TextStyle(
-                        fontSize: 13, color: Color(0xFF1A1A2E)),
-                  ),
-                  trailing: const Icon(Icons.chevron_right,
-                      color: Colors.grey, size: 18),
-                  onTap: () {
-                    widget.onSelected(hsCode);
-                    Navigator.pop(context);
-                  },
-                  dense: true,
-                  contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                );
-              },
-            ),
+            child:
+                _items.isEmpty && _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _items.isEmpty
+                    ? Center(
+                      child: Text(
+                        'No commodities found',
+                        style: TextStyle(color: Colors.grey.shade500),
+                      ),
+                    )
+                    : ListView.separated(
+                      controller: _scrollCtrl,
+                      padding: const EdgeInsets.only(bottom: 24),
+                      itemCount: _items.length + (_isLoading ? 1 : 0),
+                      separatorBuilder:
+                          (_, __) => const Divider(
+                            height: 1,
+                            indent: 16,
+                            endIndent: 16,
+                          ),
+                      itemBuilder: (ctx, i) {
+                        if (i == _items.length) {
+                          return const Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Center(
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          );
+                        }
+                        final item = _items[i];
+                        final hsCode = item['HS_Code__c'] as String? ?? '';
+                        return ListTile(
+                          title: Text(
+                            hsCode,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF1A1A2E),
+                            ),
+                          ),
+                          trailing: const Icon(
+                            Icons.chevron_right,
+                            color: Colors.grey,
+                            size: 18,
+                          ),
+                          onTap: () {
+                            widget.onSelected(hsCode);
+                            Navigator.pop(context);
+                          },
+                          dense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 2,
+                          ),
+                        );
+                      },
+                    ),
           ),
         ],
       ),

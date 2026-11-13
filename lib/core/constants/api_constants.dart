@@ -202,6 +202,9 @@ class ApiConstants {
 
   static String get savedQuotations => '$baseUrl/user/quote';
 
+  /// Salesforce accounts for the logged-in internal user's salesperson (OwnerId).
+  static String get opportunityAccounts => '$baseUrl/user/opportunity/accounts';
+
   /// User quotes — omit [accountId] for admin (all users).
   static String userQuotes({String? accountId}) {
     final id = accountId?.trim() ?? '';

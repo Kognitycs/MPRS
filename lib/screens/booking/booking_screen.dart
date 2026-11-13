@@ -241,7 +241,7 @@ class _BookingScreenState extends State<BookingScreen>
             _quoteStatus(booking, ctrl),
           );
         }).toList();
-    return Records.sortNewestFirst(filtered);
+    return Records.keepLatestPerOpportunity(Records.sortNewestFirst(filtered));
   }
 
   bool _isRealInProgressQuote(Records booking, BookingController ctrl) {
@@ -371,7 +371,7 @@ class _BookingScreenState extends State<BookingScreen>
               return SavedQuotationsModel.isAcceptedStatus(status);
           }
         }).toList();
-    return Records.sortNewestFirst(filtered);
+    return Records.keepLatestPerOpportunity(Records.sortNewestFirst(filtered));
   }
 
   Widget _buildInProgressFilterPage(
