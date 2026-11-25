@@ -45,6 +45,9 @@ class ContainerSizeSelectionScreen extends StatefulWidget {
   /// Account margin percentage (e.g. 10.0 → 10%). null when not configured.
   final double? accountMarginPct;
 
+  /// Primary action label (e.g. "OK" when continuing without a tagged account).
+  final String confirmButtonLabel;
+
   const ContainerSizeSelectionScreen({
     Key? key,
     required this.origin,
@@ -61,6 +64,7 @@ class ContainerSizeSelectionScreen extends StatefulWidget {
     this.containerType,
     this.userType = 'External',
     this.accountMarginPct,
+    this.confirmButtonLabel = 'Confirm',
   }) : super(key: key);
 
   @override
@@ -500,9 +504,9 @@ class _ContainerSizeSelectionScreenState
                     elevation: 0,
                     padding: EdgeInsets.zero,
                   ),
-                  child: const Text(
-                    'Confirm',
-                    style: TextStyle(
+                  child: Text(
+                    widget.confirmButtonLabel,
+                    style: const TextStyle(
                       fontWeight: FontWeight.w700,
                       color: Colors.white,
                       fontSize: 18,

@@ -28,7 +28,7 @@ class UserNotificationService {
     return AuthDataHelper.getAccountId().trim();
   }
 
-  /// Pull-to-refresh: optional remote sync for Admin/Internal; local for others.
+  /// Pull-to-refresh: optional remote sync for Admin; local for others.
   static Future<List<NotificationItem>> loadWithRemoteSync() async {
     if (!FcmInboxService.usesRemoteInboxApi) {
       debugPrint('🔔 loadWithRemoteSync: skipped remote API — using FCM cache');
@@ -61,6 +61,7 @@ class UserNotificationService {
     String accountId,
   ) {
     final byKey = <String, NotificationItem>{};
+    final isInternal = AuthDataHelper.isInternalUser();
 
     void add(NotificationItem item) {
       if (!item.hasDisplayContent) return;
@@ -74,6 +75,7 @@ class UserNotificationService {
       if (!item.isVisibleToUserType(userType)) return;
 
       if (!item.isShipmentAlert &&
+          !isInternal &&
           accountId.isNotEmpty &&
           item.ownerAccountId?.trim().isNotEmpty == true &&
           item.ownerAccountId!.trim() != accountId) {

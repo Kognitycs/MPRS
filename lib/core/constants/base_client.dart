@@ -606,15 +606,8 @@ class _LoggingInterceptor extends Interceptor {
       return;
     }
 
-    if (!silent) {
-      if (err.type == DioExceptionType.unknown) {
-        showSnackBar(Get.context!, "Something went wrong");
-      } else if (err.type == DioExceptionType.connectionError) {
-        showSnackBar(Get.context!, "Connection Error");
-      } else if (err.type == DioExceptionType.receiveTimeout) {
-        showSnackBar(Get.context!, "Request timed out");
-      }
-    }
+    // Do not toast here — home and dashboards fire many parallel requests;
+    // callers show [showServiceErrorGetSnackbar] only for user-initiated actions.
 
     return handler.next(err);
   }

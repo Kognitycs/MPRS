@@ -49,8 +49,18 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   int? get _accountStep => _picksAccount ? 0 : null;
   int get _routeStep => _picksAccount ? 1 : 0;
   int get _ratesStep => _picksAccount ? 2 : 1;
-  int? get _editPriceStep => _picksAccount ? 3 : null;
-  int? get _getQuoteStep => _picksAccount ? 4 : null;
+  bool get _internalFullQuoteFlow {
+    if (!_picksAccount || _selectedSalesAccountId == null) return false;
+    for (final c in _salesAccounts) {
+      if (c.id == _selectedSalesAccountId) {
+        return c.accountIdForApi != null;
+      }
+    }
+    return false;
+  }
+
+  int? get _editPriceStep => _internalFullQuoteFlow ? 3 : null;
+  int? get _getQuoteStep => _internalFullQuoteFlow ? 4 : null;
   int get _reviewStep => 2;
 
   List<InternalQuoteLineEdit>? _lineEdits;
@@ -58,7 +68,8 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   String? _selectedContainerSize;
   List<PricebookEntryModel>? _quotePricebookEntries;
   final Map<String, TextEditingController> _sellControllers = {};
-  final Map<String, TextEditingController> _taxControllers = {};
+  final Map<String, String> _selectedTaxPercent = {};
+  static const List<String> _taxPercentOptions = ['18', '5'];
 
   static const _pageBg = Colors.white;
   static const _titleColor = Color(0xFF1C2434);
@@ -69,7 +80,7 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   void initState() {
     super.initState();
     controller = Get.put(SearchRouteController());
-    WidgetsBinding.instance.addPostFrameCallback((_) => _initializeForm());
+    _initializeForm();
     if (_picksAccount) _loadSalesAccounts();
   }
 
@@ -83,17 +94,18 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       _selectedSalesAccountId = null;
     });
     controller.selectedSalesAccount.value = null;
+    final err = result.errorMessage;
+    if (err != null && err.trim().isNotEmpty) {
+      debugPrint('SalesAccountDirectory UI: $err');
+    }
   }
 
   List<SalesAccountChoice> get _visibleSalesAccounts {
     final query = _accountSearchQuery.trim().toLowerCase();
-    final self = _salesAccounts.where((c) => c.isSelf);
-    final assigned = _salesAccounts.where((c) => !c.isSelf);
-    if (query.isEmpty) {
-      return [...self, ...assigned];
-    }
-    bool matches(SalesAccountChoice c) => c.name.toLowerCase().contains(query);
-    return [...self.where(matches), ...assigned.where(matches)];
+    if (query.isEmpty) return _salesAccounts;
+    return _salesAccounts
+        .where((c) => c.name.toLowerCase().contains(query))
+        .toList();
   }
 
   @override
@@ -107,22 +119,20 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
     for (final c in _sellControllers.values) {
       c.dispose();
     }
-    for (final c in _taxControllers.values) {
-      c.dispose();
-    }
     _sellControllers.clear();
-    _taxControllers.clear();
+    _selectedTaxPercent.clear();
   }
 
   void _syncLineEditsFromControllers() {
     if (_lineEdits == null) return;
     for (final line in _lineEdits!) {
       final sellText = _sellControllers[line.pricebookEntryId]?.text.trim();
-      final taxText = _taxControllers[line.pricebookEntryId]?.text.trim();
       final sell = double.tryParse(sellText ?? '');
       if (sell != null) line.sellPrice = sell;
-      final tax = double.tryParse(taxText ?? '');
-      line.taxPercent = tax ?? 0;
+      final taxKey =
+          _selectedTaxPercent[line.pricebookEntryId] ??
+          defaultTaxPercentForProduct(line.productName).round().toString();
+      line.taxPercent = double.tryParse(taxKey) ?? 5;
     }
   }
 
@@ -153,48 +163,68 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
                 ? line.sellPrice.round().toString()
                 : line.sellPrice.toStringAsFixed(2),
       );
-      _taxControllers[line.pricebookEntryId] = TextEditingController(
-        text: line.taxPercent > 0 ? line.taxPercent.toString() : '',
-      );
+      final defaultTax = defaultTaxPercentForProduct(line.productName);
+      final taxValue =
+          (line.taxPercent == 18 || line.taxPercent == 5)
+              ? line.taxPercent.round().toString()
+              : defaultTax.round().toString();
+      line.taxPercent = double.parse(taxValue);
+      _selectedTaxPercent[line.pricebookEntryId] = taxValue;
     }
   }
 
-  void _continueFromEditPrice() {
+  Future<void> _continueFromEditPrice() async {
     if (!_editPriceCanContinue) return;
     _syncLineEditsFromControllers();
+    await controller.ensureOpportunityForSelectedAccount();
     controller.internalQuoteLineEdits = List<InternalQuoteLineEdit>.from(
       _lineEdits!,
     );
     controller.internalMatchedRateEntry = _selectedPricebookEntry;
     controller.internalPricebookEntries = _quotePricebookEntries;
     controller.internalContainerSize = _selectedContainerSize;
+    if (!mounted) return;
     setState(() => _step = _getQuoteStep!);
   }
 
   void _continueFromAccount() {
     SalesAccountChoice? selected;
-    for (final choice in _salesAccounts) {
-      if (choice.id == _selectedSalesAccountId) selected = choice;
-    }
-    if (selected == null) {
-      Get.snackbar('Required', 'Please select an account');
-      return;
+    if (_selectedSalesAccountId != null) {
+      for (final choice in _salesAccounts) {
+        if (choice.id == _selectedSalesAccountId) selected = choice;
+      }
     }
     controller.selectedSalesAccount.value = selected;
+    // New account → new opportunity before quote (account is on opportunity, not quote).
+    controller.clearOpportunityCache();
     setState(() => _step = _routeStep);
   }
 
-  void _initializeForm() {
-    if (!mounted) return;
+  void _resetLocalSearch() {
+    _step = 0;
+    _originError = null;
+    _destinationError = null;
+    _selectedMloEntries = null;
+    _accountMarginPct = null;
+    _selectedSalesAccountId = null;
+    _accountSearchQuery = '';
+    _accountSearchCtrl.clear();
+    _selectedPricebookEntry = null;
+    _selectedContainerSize = null;
+    _quotePricebookEntries = null;
+    _disposeLineControllers();
+    _lineEdits = null;
+  }
 
-    if (!widget.embedded) {
-      controller.clearSelections();
-    }
+  void _initializeForm() {
+    controller.clearSelections();
+    _resetLocalSearch();
     if (controller.validFromDate.value == null) {
       final now = DateTime.now();
       controller.validFromDate.value =
           "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
     }
+    controller.syncValidTillFromCreation();
   }
 
   @override
@@ -391,7 +421,9 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   Widget _buildStepper() {
     final labels =
         _picksAccount
-            ? const ['Account', 'Route', 'Rates', 'Price', 'Get a quote']
+            ? (_internalFullQuoteFlow
+                ? const ['Account', 'Route', 'Rates', 'Price', 'Get a quote']
+                : const ['Account', 'Route', 'Rates'])
             : const ['Route', 'Rates', 'Review'];
     return Row(
       children: [
@@ -513,7 +545,8 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
         ),
         const SizedBox(height: 4),
         const Text(
-          'Choose the account this rate search is for.',
+          'Optional. Select a customer account to create an opportunity and '
+          'continue to Price and Get a quote. Skip to search rates only.',
           style: TextStyle(fontSize: 13, color: _muted, height: 1.35),
         ),
         const SizedBox(height: 14),
@@ -546,12 +579,14 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
             padding: EdgeInsets.symmetric(vertical: 24),
             child: Center(child: CircularProgressIndicator()),
           )
-        else if (visible.isEmpty && _accountSearchQuery.trim().isNotEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 16),
+        else if (visible.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
             child: Text(
-              'No accounts match your search.',
-              style: TextStyle(fontSize: 13, color: _muted),
+              _accountSearchQuery.trim().isNotEmpty
+                  ? 'No accounts match your search.'
+                  : 'No customer accounts for your OwnerId yet.',
+              style: const TextStyle(fontSize: 13, color: _muted),
             ),
           )
         else
@@ -570,12 +605,17 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
           onTap: () {
-            setState(() => _selectedSalesAccountId = choice.id);
-            controller.selectedSalesAccount.value = choice;
-            if (choice.isSelf) {
-              controller.lastOpportunityId = null;
-              controller.lastValidTill = null;
-            }
+            setState(() {
+              if (_selectedSalesAccountId == choice.id) {
+                _selectedSalesAccountId = null;
+                controller.selectedSalesAccount.value = null;
+                controller.lastOpportunityId = null;
+                controller.lastValidTill = null;
+              } else {
+                _selectedSalesAccountId = choice.id;
+                controller.selectedSalesAccount.value = choice;
+              }
+            });
           },
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
@@ -607,11 +647,15 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
                           color: _titleColor,
                         ),
                       ),
-                      if (choice.isSelf)
-                        const Text(
-                          'You',
-                          style: TextStyle(fontSize: 12, color: _muted),
+                      const SizedBox(height: 4),
+                      Text(
+                        choice.customerTierLabel,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: _muted,
+                          fontWeight: FontWeight.w600,
                         ),
+                      ),
                     ],
                   ),
                 ),
@@ -1025,7 +1069,7 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'Edit Quote Line Item',
+          'Edit Quote Line Items',
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w700,
@@ -1112,10 +1156,16 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
 
   Widget _buildEditPriceRow(InternalQuoteLineEdit line) {
     final sellCtrl = _sellControllers[line.pricebookEntryId];
-    final taxCtrl = _taxControllers[line.pricebookEntryId];
-    if (sellCtrl == null || taxCtrl == null) return const SizedBox.shrink();
+    if (sellCtrl == null) return const SizedBox.shrink();
+    final taxValue =
+        _selectedTaxPercent[line.pricebookEntryId] ??
+        defaultTaxPercentForProduct(line.productName).round().toString();
     final belowBuy = _lineSellBelowBuy(line);
-    final buyLabel = '${line.currency} ${_formatPrice(line.buyPrice)}';
+    final buyLabel = _formatPrice(line.buyPrice);
+    final currencyChip =
+        line.currency.trim().isNotEmpty
+            ? line.currency.trim().toUpperCase()
+            : '';
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -1155,7 +1205,8 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
               runSpacing: 8,
               children: [
                 _buildEditPriceMetaChip('Qty ${line.quantity}'),
-                _buildEditPriceMetaChip(line.currency),
+                if (currencyChip.isNotEmpty)
+                  _buildEditPriceMetaChip(currencyChip),
               ],
             ),
             const SizedBox(height: 14),
@@ -1226,7 +1277,11 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
                           hint: 'Enter sell price',
                           hasError: belowBuy,
                         ),
-                        onChanged: (_) => setState(() {}),
+                        onChanged: (value) {
+                          final sell = double.tryParse(value.trim());
+                          if (sell != null) line.sellPrice = sell;
+                          setState(() {});
+                        },
                       ),
                     ],
                   ),
@@ -1243,20 +1298,19 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
               ),
             ),
             const SizedBox(height: 6),
-            TextField(
-              controller: taxCtrl,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: _titleColor,
-              ),
-              decoration: _editPriceFieldDecoration(
-                hint: 'Optional',
-              ),
-              onChanged: (_) => setState(() {}),
+            DropdownButtonFormField<String>(
+              value: _taxPercentOptions.contains(taxValue) ? taxValue : '5',
+              decoration: _editPriceFieldDecoration(hint: 'Select tax'),
+              items:
+                  _taxPercentOptions
+                      .map(
+                        (v) => DropdownMenuItem(value: v, child: Text('$v%')),
+                      )
+                      .toList(),
+              onChanged: (v) {
+                if (v == null) return;
+                setState(() => _selectedTaxPercent[line.pricebookEntryId] = v);
+              },
             ),
           ],
         ),
@@ -1300,6 +1354,16 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
           _reviewLine(
             'Valid From',
             _formatDisplayDate(controller.validFromDate.value),
+          ),
+          _reviewLine(
+            'Valid Till',
+            _formatDisplayDate(
+              controller.lastValidTill ??
+                  SearchRouteController.validTillFromValidFrom(
+                    controller.searchCreatedOn ??
+                        controller.validFromDate.value,
+                  ),
+            ),
           ),
         ]),
         const SizedBox(height: 12),
@@ -1408,7 +1472,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   Future<double?> _fetchAccountMargin() async {
     try {
       final token = AuthDataHelper.getToken();
-      final accountId = AuthDataHelper.getAccountId();
+      final accountId =
+          controller.selectedSalesAccount.value?.accountIdForApi ??
+          AuthDataHelper.getAccountId();
+      if (accountId.trim().isEmpty) return null;
       final response = await http.get(
         Uri.parse(ApiConstants.userMarginAccount(accountId)),
         headers: AppConfig.mergeApiHeaders({'Authorization': 'Bearer $token'}),
@@ -1549,35 +1616,70 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
             ),
             userType: AuthDataHelper.getUserType(),
             accountMarginPct: _accountMarginPct,
+            confirmButtonLabel:
+                _picksAccount && _selectedSalesAccountId == null
+                    ? 'OK'
+                    : 'Confirm',
             onConfirm: (selectedContainerString) async {
-              final matched = entries.firstWhere(
-                (e) =>
-                    selectedContainerString?.contains(e.containerSize) == true,
-                orElse: () => first,
-              );
-              if (_picksAccount) {
+              // Rate card row the user opened — not another ocean row for same size.
+              final matched = () {
+                final sizeText = selectedContainerString?.trim() ?? '';
+                if (sizeText.isNotEmpty && first.containerSize.isNotEmpty) {
+                  if (sizeText.contains(first.containerSize) ||
+                      first.containerSize.contains(sizeText.split(' ').first)) {
+                    return first;
+                  }
+                }
+                return entries.firstWhere(
+                  (e) =>
+                      selectedContainerString?.contains(e.containerSize) == true,
+                  orElse: () => first,
+                );
+              }();
+              if (_picksAccount && _internalFullQuoteFlow) {
                 final sizeLabel =
                     selectedContainerString?.trim().isNotEmpty == true
                         ? selectedContainerString!.trim()
                         : matched.containerSize;
                 final qty =
                     int.tryParse(controller.quantityCtrl.text.trim()) ?? 1;
-                final pricebook = allForMlo.isNotEmpty ? allForMlo : entries;
+                final pricebook =
+                    controller.lastSearchAllRecords
+                        .where((e) => e.mloCode.trim() == first.mloCode.trim())
+                        .toList();
+                final bundle =
+                    pricebook.isNotEmpty ? pricebook : allForMlo.isNotEmpty
+                        ? allForMlo
+                        : entries;
                 final edits = buildInternalQuoteLineEdits(
-                  allEntries: pricebook,
+                  allEntries: bundle,
                   selectedContainerSize: sizeLabel,
                   quantity: qty,
                   userType: AuthDataHelper.getUserType(),
                   accountMarginPct: _accountMarginPct,
+                  anchorEntry: matched,
                 );
                 if (!mounted) return;
                 setState(() {
                   _selectedPricebookEntry = matched;
                   _selectedContainerSize = sizeLabel;
-                  _quotePricebookEntries = pricebook;
+                  _quotePricebookEntries = bundle;
+                  controller.internalMatchedRateEntry = matched;
+                  controller.internalPricebookEntries = bundle;
+                  controller.selectedQuotePricebook2Id =
+                      pricebook2IdForEntry(matched, bundle) ??
+                      anchorPricebook2Id(
+                        allEntries: bundle,
+                        selectedContainerSize: sizeLabel,
+                        anchorEntry: matched,
+                      );
                   _primeLineEditControllers(edits);
                   _step = _editPriceStep!;
                 });
+                return;
+              }
+
+              if (_picksAccount && !_internalFullQuoteFlow) {
                 return;
               }
 
@@ -1637,7 +1739,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       return const SizedBox.shrink();
     }
     final searching = controller.isSearchingPricebook.value;
-    final String label = 'Continue';
+    final String label =
+        _step == _accountStep && _selectedSalesAccountId == null
+            ? 'Continue without account'
+            : 'Continue';
     final VoidCallback? action =
         _step == _accountStep
             ? _continueFromAccount
@@ -1646,8 +1751,7 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
             : (_editPriceStep != null && _step == _editPriceStep)
             ? _continueFromEditPrice
             : _continueFromReview;
-    final bool accountContinueBlocked =
-        _step == _accountStep && _selectedSalesAccountId == null;
+    final bool accountContinueBlocked = false;
     final bool editPriceBlocked =
         _editPriceStep != null &&
         _step == _editPriceStep &&
@@ -1669,12 +1773,14 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
                         : action,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.main,
-                  disabledBackgroundColor: editPriceBlocked
-                      ? const Color(0xFFD0D5DD)
-                      : AppColors.main.withValues(alpha: 0.6),
-                  disabledForegroundColor: editPriceBlocked
-                      ? const Color(0xFF98A2B3)
-                      : Colors.white.withValues(alpha: 0.9),
+                  disabledBackgroundColor:
+                      editPriceBlocked
+                          ? const Color(0xFFD0D5DD)
+                          : AppColors.main.withValues(alpha: 0.6),
+                  disabledForegroundColor:
+                      editPriceBlocked
+                          ? const Color(0xFF98A2B3)
+                          : Colors.white.withValues(alpha: 0.9),
                   elevation: 0,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
@@ -1899,9 +2005,11 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
           firstDate: DateTime(now.year, now.month, now.day),
           lastDate: DateTime(2100),
         );
-        if (date == null) return;
-        controller.validFromDate.value =
-            '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+        if (date == null || !mounted) return;
+        setState(() {
+          controller.validFromDate.value =
+              '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+        });
       },
       child: Container(
         width: double.infinity,

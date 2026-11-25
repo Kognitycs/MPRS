@@ -21,6 +21,7 @@ class SavedQuotationsModel {
   String? opportunityId;
   String? accountName;
   String? accountId;
+
   /// True when linked Opportunity was created from the RMS app (`opp_from_rms_app`).
   bool? opportunityFromRms;
 
@@ -76,9 +77,7 @@ class SavedQuotationsModel {
 
   static bool isInProgressListStatus(String? raw) {
     final status = normalizeQuoteListStatus(raw);
-    return status == 'draft' ||
-        status == 'accepted' ||
-        status == 'presented';
+    return status == 'draft' || status == 'accepted' || status == 'presented';
   }
 
   /// Book → Quotations tabs (draft, pending, accepted; not booked).
@@ -97,10 +96,7 @@ class SavedQuotationsModel {
       normalizeQuoteListStatus(raw) == 'accepted';
 
   /// True for QT-TEST* quote names and obvious test MSL labels.
-  static bool isTestQuoteLabel(
-    String? quoteName, {
-    String? opportunityName,
-  }) {
+  static bool isTestQuoteLabel(String? quoteName, {String? opportunityName}) {
     final name = (quoteName ?? '').trim().toLowerCase();
     if (name.isNotEmpty) {
       if (name == 'test quote' || name == 'test') return true;
@@ -121,10 +117,7 @@ class SavedQuotationsModel {
     final n = (name ?? '').trim();
     if (n.isEmpty) return false;
     if (RegExp(r'^qt-', caseSensitive: false).hasMatch(n)) return false;
-    return RegExp(
-      r'^msl\d+(\s*-\s*q\d+)?$',
-      caseSensitive: false,
-    ).hasMatch(n);
+    return RegExp(r'^msl\d+(\s*-\s*q\d+)?$', caseSensitive: false).hasMatch(n);
   }
 
   /// Empty opportunity shell rows — hide from Book → Quotations (All/Draft).
@@ -179,8 +172,8 @@ class SavedQuotationsModel {
     if (account is Map) {
       accountName = account['Name']?.toString();
     } else {
-      accountName = json['accountName']?.toString() ??
-          json['companyName']?.toString();
+      accountName =
+          json['accountName']?.toString() ?? json['companyName']?.toString();
     }
 
     final accountId = _readString(
@@ -624,9 +617,9 @@ class SavedQuotationsModel {
         accountId: result.accountId ?? source.accountId,
         opportunityFromRms:
             result.opportunityFromRms == true ||
-                source.opportunityFromRms == true
-            ? true
-            : (result.opportunityFromRms ?? source.opportunityFromRms),
+                    source.opportunityFromRms == true
+                ? true
+                : (result.opportunityFromRms ?? source.opportunityFromRms),
       );
     }
     return (result?.hasDisplayData == true || result?._hasWeightData == true)
@@ -681,9 +674,7 @@ class SavedQuotationsModel {
             json['grossWeight'],
       ),
       commodity: _readString(
-        json['Commodity__c'] ??
-            json['commodity'] ??
-            json['additionalInfo'],
+        json['Commodity__c'] ?? json['commodity'] ?? json['additionalInfo'],
       ),
       expirationDate: json['ExpirationDate']?.toString(),
       status: json['Status']?.toString(),

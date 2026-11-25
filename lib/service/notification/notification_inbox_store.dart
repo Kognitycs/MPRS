@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/model/notification_item.dart';
 import 'package:mprs_android/service/notification/notification_inbox_refresh.dart';
+import 'package:mprs_android/service/notification/notification_poll_service.dart';
 import 'package:mprs_android/service/notification/user_notification_service.dart';
 
 /// Holds notification tab state: previous cards stay, new ones merge in with their time.
@@ -14,6 +15,11 @@ class NotificationInboxStore extends ChangeNotifier {
   bool _hydrated = false;
 
   List<NotificationItem> get items => List.unmodifiable(_items);
+
+  /// Home bell — unread only (read when inbox is opened).
+  int get unreadBadgeCount => NotificationPollService.unreadCount(_items);
+
+  void notifyBadgeChanged() => notifyListeners();
 
   /// Load from SQLite (login / open tab). Does not re-sync shipments.
   Future<List<NotificationItem>> ensureLoaded({bool forceDb = false}) async {

@@ -159,10 +159,14 @@ class PricebookEntryModel {
     final destinationPortName = destPort?['Name']?.toString().trim() ?? '';
     final destinationIcdName = destIcd?['Name']?.toString().trim() ?? '';
 
+    final product2IdRaw = json['Product2Id']?.toString().trim() ?? '';
+    final product2IdFromNested = product?['Id']?.toString().trim() ?? '';
+
     return PricebookEntryModel(
       id: json['Id'] ?? "",
 
-      product2Id: json['Product2Id'] ?? "",
+      product2Id:
+          product2IdRaw.isNotEmpty ? product2IdRaw : product2IdFromNested,
 
       productName: json['Name'] ?? product?['Name']?.toString() ?? '',
 
@@ -218,7 +222,11 @@ class PricebookEntryModel {
 
       mprsCurrencyC: json['MPRS_Currency__c'] ?? "USD",
 
-      pricebook2Id: json['Pricebook2Id'] as String?,
+      pricebook2Id: () {
+        final direct = json['Pricebook2Id']?.toString().trim() ?? '';
+        if (direct.isNotEmpty) return direct;
+        return pricebook2?['Id']?.toString().trim();
+      }(),
 
       product2:
           json['Product2'] != null

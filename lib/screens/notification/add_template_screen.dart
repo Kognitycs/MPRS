@@ -147,11 +147,11 @@ class _AddTemplateScreenState extends State<AddTemplateScreen> {
         showSnackBar(context, "Template Created Successfully!");
         Navigator.pop(context,true);
       } else {
-        showSnackBar(context, "Error: ${response.message}");
+        showServiceErrorSnackBar(context);
       }
     } catch (e) {
       ProgressLoader.hide(context);
-      showSnackBar(context, "Error: $e");
+      showServiceErrorSnackBar(context);
     }
   }
 
@@ -184,11 +184,11 @@ class _AddTemplateScreenState extends State<AddTemplateScreen> {
         );
         Navigator.pop(context,true);
       } else {
-        showSnackBar(context, "Error: ${response.message}");
+        showServiceErrorSnackBar(context);
       }
     } catch (e) {
       ProgressLoader.hide(context);
-      showSnackBar(context, "Error: $e");
+      showServiceErrorSnackBar(context);
     }
   }
 

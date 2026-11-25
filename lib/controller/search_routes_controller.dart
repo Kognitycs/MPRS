@@ -154,7 +154,7 @@
 // //     } catch (e) {
 // //       showGetQuoteButton.value = false;
 // //       print("SEARCH ERROR: $e");
-// //       Get.snackbar("Error", "Something went wrong");
+// //       showServiceErrorGetSnackbar();
 // //     } finally {
 // //       isSearchingPricebook.value = false;
 // //     }
@@ -367,7 +367,7 @@
 //     } catch (e) {
 //       showGetQuoteButton.value = false;
 //       print("SEARCH ERROR: $e");
-//       Get.snackbar("Error", "Something went wrong");
+//       showServiceErrorGetSnackbar();
 //     } finally {
 //       isSearchingPricebook.value = false;
 //     }
@@ -400,6 +400,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/core/constants/api_constants.dart';
+import 'package:mprs_android/core/utils/snackbar_util.dart';
 import 'package:mprs_android/model/api_response.dart';
 import 'package:mprs_android/service/http_client_helper.dart';
 import 'package:mprs_android/service/port_service.dart';
@@ -468,6 +469,9 @@ class SearchRouteController extends GetxController {
   /// Set when create-opportunity succeeds during pricebook search.
   String? lastOpportunityId;
 
+  /// Salesforce Account Id used for [lastOpportunityId] (Search Rates selection).
+  String? lastOpportunityAccountId;
+
   /// Account chosen on the internal-user Search Rates step.
   final Rxn<SalesAccountChoice> selectedSalesAccount = Rxn<SalesAccountChoice>();
   String? lastValidTill;
@@ -477,15 +481,108 @@ class SearchRouteController extends GetxController {
   PricebookEntryModel? internalMatchedRateEntry;
   List<PricebookEntryModel>? internalPricebookEntries;
   String? internalContainerSize;
+  /// Pricebook of the rate the user selected. Quote lines are stamped with this id.
+  String? selectedQuotePricebook2Id;
 
-  /// Internal user on own profile: search pricebook only (no SF opportunity).
+  /// Internal: create opportunity only when a customer account is selected.
   bool get shouldCreateOpportunity {
     if (AuthDataHelper.getUserType().toLowerCase().trim() != 'internal') {
       return true;
     }
-    final choice = selectedSalesAccount.value;
-    if (choice == null) return true;
-    return !choice.isSelf;
+    final accountId = selectedSalesAccount.value?.accountIdForApi;
+    return accountId != null && accountId.isNotEmpty;
+  }
+
+  String? get selectedCustomerAccountId =>
+      selectedSalesAccount.value?.accountIdForApi?.trim();
+
+  bool get opportunityMatchesSelectedAccount {
+    final account = selectedCustomerAccountId;
+    if (account == null || account.isEmpty) return false;
+    final opp = lastOpportunityId?.trim();
+    if (opp == null || opp.isEmpty) return false;
+    return lastOpportunityAccountId?.trim() == account;
+  }
+
+  /// Quote validity: Valid Till = search creation date + this many days.
+  static const int quoteValidTillDaysAfterFrom = 2;
+
+  /// Day the Search Rates form was opened (`YYYY-MM-DD`).
+  String? searchCreatedOn;
+
+  /// Returns `YYYY-MM-DD` for [validFrom] + [days] (default +2).
+  static String? validTillFromValidFrom(
+    String? validFrom, {
+    int days = quoteValidTillDaysAfterFrom,
+  }) {
+    final raw = validFrom?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) return null;
+    final till = parsed.add(Duration(days: days));
+    final y = till.year;
+    final m = till.month.toString().padLeft(2, '0');
+    final d = till.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  void syncValidTillFromCreation() {
+    searchCreatedOn ??= _isoToday();
+    lastValidTill = validTillFromValidFrom(searchCreatedOn);
+  }
+
+  String _isoToday() {
+    final now = DateTime.now();
+    return '${now.year}-'
+        '${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')}';
+  }
+
+  void _rememberOpportunity({
+    required String? opportunityId,
+    required String? validTill,
+    required String accountId,
+  }) {
+    lastOpportunityId = opportunityId;
+    lastValidTill =
+        validTillFromValidFrom(searchCreatedOn) ?? validTill?.trim();
+    lastOpportunityAccountId = accountId.trim().isEmpty ? null : accountId.trim();
+  }
+
+  void clearOpportunityCache() {
+    lastOpportunityId = null;
+    lastValidTill = null;
+    lastOpportunityAccountId = null;
+  }
+
+  /// Quotes inherit account from opportunity — refresh when account/route changed.
+  Future<String?> ensureOpportunityForSelectedAccount() async {
+    if (!shouldCreateOpportunity) return lastOpportunityId;
+
+    if (opportunityMatchesSelectedAccount) {
+      return lastOpportunityId?.trim();
+    }
+
+    try {
+      final resp = await createOpportunityApi();
+      if (resp.statusCode != 200 && resp.statusCode != 201) return null;
+
+      final body = jsonDecode(resp.data);
+      if (body is! Map || body['success'] != true) return null;
+
+      final id = parseOpportunityIdFromBody(body);
+      final till = parseValidTillFromBody(body);
+      final account = selectedCustomerAccountId ?? '';
+      _rememberOpportunity(
+        opportunityId: id,
+        validTill: till,
+        accountId: account,
+      );
+      return id;
+    } catch (e) {
+      debugPrint('ensureOpportunityForSelectedAccount: $e');
+      return null;
+    }
   }
 
   static String? parseOpportunityIdFromBody(dynamic body) {
@@ -598,7 +695,9 @@ class SearchRouteController extends GetxController {
     fetchPorts();
 
     // Optional: default date
-    validFromDate.value = DateTime.now().toString().split(' ')[0];
+    validFromDate.value = _isoToday();
+    searchCreatedOn = validFromDate.value;
+    syncValidTillFromCreation();
   }
 
   // ─────────────────────────────────────────────
@@ -611,6 +710,8 @@ class SearchRouteController extends GetxController {
     isHaz.value = false;
     isReefer.value = false;
     validFromDate.value = null;
+    searchCreatedOn = _isoToday();
+    lastValidTill = validTillFromValidFrom(searchCreatedOn);
     selectedMode.value = "Ocean";
 
     quantityCtrl.clear();
@@ -626,6 +727,13 @@ class SearchRouteController extends GetxController {
     showGetQuoteButton.value = false;
     lastSearchEntries = [];
     lastSearchAllRecords = [];
+    selectedSalesAccount.value = null;
+    internalQuoteLineEdits = null;
+    internalMatchedRateEntry = null;
+    internalPricebookEntries = null;
+    internalContainerSize = null;
+    selectedQuotePricebook2Id = null;
+    clearOpportunityCache();
   }
 
   bool _validateMandatoryFields() {
@@ -706,10 +814,9 @@ class SearchRouteController extends GetxController {
     selectedOriginSector.value = origin?.sectorName;
     selectedDestinationSector.value = destination?.sectorName;
     final now = DateTime.now();
-    validFromDate.value =
-        '${now.year}-'
-        '${now.month.toString().padLeft(2, '0')}-'
-        '${now.day.toString().padLeft(2, '0')}';
+    validFromDate.value = _isoToday();
+    searchCreatedOn ??= validFromDate.value;
+    syncValidTillFromCreation();
   }
 
   PortModel? _getPortByName(String? name) {
@@ -748,8 +855,7 @@ class SearchRouteController extends GetxController {
   // ─────────────────────────────────────────────
   Future<ApiResponse> createOpportunityApi() async {
     if (!shouldCreateOpportunity) {
-      lastOpportunityId = null;
-      lastValidTill = null;
+      clearOpportunityCache();
       return ApiResponse(statusCode: 204, data: '{}');
     }
 
@@ -762,18 +868,47 @@ class SearchRouteController extends GetxController {
     }
 
     final choice = selectedSalesAccount.value;
-    final selectedAccount = choice?.accountIdForApi;
-    final userid =
-        (selectedAccount != null && selectedAccount.isNotEmpty)
-            ? selectedAccount
-            : AuthDataHelper.getAccountId();
+    final selectedAccount = choice?.accountIdForApi?.trim() ?? '';
+    final isInternal =
+        AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
+    final String userid;
+    if (isInternal) {
+      if (selectedAccount.isEmpty) {
+        Get.snackbar('Required', 'Please select a customer account');
+        return ApiResponse(
+          statusCode: 400,
+          data: jsonEncode({
+            'success': false,
+            'message': 'Customer account required',
+          }),
+        );
+      }
+      userid = selectedAccount;
+    } else {
+      userid =
+          selectedAccount.isNotEmpty
+              ? selectedAccount
+              : AuthDataHelper.getAccountId().trim();
+    }
+    if (userid.isEmpty) {
+      Get.snackbar('Error', 'Account id missing for opportunity');
+      return ApiResponse(
+        statusCode: 400,
+        data: jsonEncode({'success': false, 'message': 'Account id missing'}),
+      );
+    }
 
     /// GET STORED VALUES
     final companyName = AuthDataHelper.getCompanyName();
     final activeRmsUser = AuthDataHelper.getActiveRmsUser();
 
+    final opportunityName =
+        (choice?.name.trim().isNotEmpty == true)
+            ? choice!.name.trim()
+            : companyName;
+
     final body = {
-      "Name": companyName,
+      "Name": opportunityName,
 
       "startLocation": origin!.portId,
       "endLocation": dest!.portId,
@@ -808,6 +943,19 @@ class SearchRouteController extends GetxController {
 
     print("✅ STATUS CODE: ${response.statusCode}");
     print("✅ RESPONSE: ${response.data}");
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      try {
+        final decoded = jsonDecode(response.data);
+        if (decoded is Map && decoded['success'] == true) {
+          _rememberOpportunity(
+            opportunityId: parseOpportunityIdFromBody(decoded),
+            validTill: parseValidTillFromBody(decoded),
+            accountId: userid,
+          );
+        }
+      } catch (_) {}
+    }
 
     return response;
   }
@@ -911,10 +1059,9 @@ class SearchRouteController extends GetxController {
       print("🌐 URL: $url");
 
       if (!shouldCreateOpportunity) {
-        lastOpportunityId = null;
-        lastValidTill = null;
+        clearOpportunityCache();
         debugPrint(
-          'Pricebook search: skipping opportunity (internal own account)',
+          'Pricebook search: skipping opportunity (no customer account)',
         );
       }
 
@@ -943,10 +1090,15 @@ class SearchRouteController extends GetxController {
             oppBody,
           );
           validTill = SearchRouteController.parseValidTillFromBody(oppBody);
-          lastOpportunityId = opportunityId;
-          lastValidTill = validTill;
+          final accountForOpp = selectedCustomerAccountId ?? '';
+          _rememberOpportunity(
+            opportunityId: opportunityId,
+            validTill: validTill,
+            accountId: accountForOpp,
+          );
           print("✅ Opportunity ID: $opportunityId");
           print("✅ Valid Till: $validTill");
+          print("✅ Opportunity Account: $accountForOpp");
         } else {
           print(
             "⚠️ Opportunity creation failed: ${oppBody is Map ? oppBody['message'] : oppBody}",
@@ -970,15 +1122,35 @@ class SearchRouteController extends GetxController {
         final List<PricebookEntryModel> parsed =
             entries.map((e) => PricebookEntryModel.fromJson(e)).toList();
 
-        // Deduplicate: if two records share the same mloCode + containerSize,
-        // keep the one whose Name is "OCEAN FREIGHT"; otherwise keep the first seen.
+        // Deduplicate mlo+size; for multiple OCEAN FREIGHT rows, prefer the MLO's
+        // dominant Pricebook2Id so the rate card matches ancillary charges.
+        bool preferOceanCandidate(
+          PricebookEntryModel current,
+          PricebookEntryModel candidate,
+        ) {
+          final dom = dominantPricebook2IdForMlo(parsed, candidate.mloCode);
+          if (dom == null) return true;
+          final cPb = pricebook2IdForEntry(candidate, parsed) ?? '';
+          final curPb = pricebook2IdForEntry(current, parsed) ?? '';
+          if (cPb == dom && curPb != dom) return true;
+          if (cPb != dom && curPb == dom) return false;
+          return true;
+        }
+
         final Map<String, PricebookEntryModel> seen = {};
         for (final e in parsed) {
           final key = '${e.mloCode}_${e.containerSize}';
           if (!seen.containsKey(key)) {
             seen[key] = e;
-          } else if (e.productName.toUpperCase() == 'OCEAN FREIGHT') {
-            // Replace the existing entry only when this one is the OCEAN FREIGHT record
+            continue;
+          }
+          final current = seen[key]!;
+          final isOcean = e.productName.toUpperCase() == 'OCEAN FREIGHT';
+          final curOcean =
+              current.productName.toUpperCase() == 'OCEAN FREIGHT';
+          if (isOcean && !curOcean) {
+            seen[key] = e;
+          } else if (isOcean && curOcean && preferOceanCandidate(current, e)) {
             seen[key] = e;
           }
         }
@@ -1053,7 +1225,7 @@ class SearchRouteController extends GetxController {
       }
     } catch (e) {
       print("❌ ERROR: $e");
-      Get.snackbar("Error", "Something went wrong");
+      showServiceErrorGetSnackbar();
       return false;
     } finally {
       isSearchingPricebook.value = false;

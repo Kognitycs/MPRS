@@ -525,22 +525,30 @@ import '../model/common/user_data.dart';
 class HttpClientHelper {
   static final _client = http.Client();
 
-  static Map<String, String> bearerAppHeaders(String token) => {
-        ...AppConfig.apiHeaders,
+  static Map<String, String> bearerAppHeaders(String token) =>
+      AppConfig.mergeApiHeaders({
         'Authorization': 'Bearer $token',
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         ...AppSecrets.apiKeyHeaders,
-      };
+      });
+
+  /// No [Content-Type] — http sets multipart boundary automatically.
+  static Map<String, String> multipartBearerHeaders(String token) =>
+      AppConfig.mergeApiHeaders({
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+        ...AppSecrets.apiKeyHeaders,
+      });
 
   /// Headers with only service API keys — no JWT. Used when we want to
   /// bypass JWT role restrictions (e.g. External user querying admin endpoints).
   static Map<String, String> apiKeysOnlyHeaders() => {
-        ...AppConfig.apiHeaders,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        ...AppSecrets.apiKeyHeaders,
-      };
+    ...AppConfig.apiHeaders,
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+    ...AppSecrets.apiKeyHeaders,
+  };
 
   /// GET with only API-key headers — no Bearer token.
   static Future<ApiResponse> getWithApiKeysOnly(String url) async {
@@ -573,21 +581,22 @@ class HttpClientHelper {
         headers == null ? baseHeaders : {...baseHeaders, ...headers};
     return _sendRequest(
       () => _client.get(Uri.parse(url), headers: mergedHeaders),
-      retryWithToken: (newToken) => _client.get(
-        Uri.parse(url),
-        headers: {...bearerAppHeaders(newToken), ...?headers},
-      ),
+      retryWithToken:
+          (newToken) => _client.get(
+            Uri.parse(url),
+            headers: {...bearerAppHeaders(newToken), ...?headers},
+          ),
     );
   }
 
   static Future<ApiResponse> postWithBearer(
-      String url,
-      String token, {   // ← token is 2nd param, body is named
-        Map<String, String>? headers,
-        Object? body,
-      }) async {
+    String url,
+    String token, { // ← token is 2nd param, body is named
+    Map<String, String>? headers,
+    Object? body,
+  }) async {
     return _sendRequest(
-          () => _client.post(
+      () => _client.post(
         Uri.parse(url),
         headers: AppConfig.mergeApiHeaders({
           'Authorization': 'Bearer $token',
@@ -601,19 +610,19 @@ class HttpClientHelper {
   }
 
   static Future<ApiResponse> postWithBearerNew(
-      String url,
-      String token, {
-        Map<String, String>? headers,
-        Object? body,
-        Encoding? encoding,
-      }) async {
+    String url,
+    String token, {
+    Map<String, String>? headers,
+    Object? body,
+    Encoding? encoding,
+  }) async {
     final mergedHeaders = AppConfig.mergeApiHeaders({
       'Authorization': 'Bearer $token',
       ...?headers,
     });
 
     return _sendRequest(
-          () => _client.post(
+      () => _client.post(
         Uri.parse(url),
         headers: mergedHeaders,
         body: body,
@@ -623,20 +632,16 @@ class HttpClientHelper {
   }
 
   static Future<ApiResponse> patchWithMultipart(
-      String url,
-      String token, {
-        required Map<String, String> fields,
-        File? file,
-        String fileField = 'profile',
-      }) async {
+    String url,
+    String token, {
+    required Map<String, String> fields,
+    File? file,
+    String fileField = 'profile',
+  }) async {
     try {
       final request = http.MultipartRequest('PATCH', Uri.parse(url));
 
-      // Add headers
-      request.headers.addAll(AppConfig.mergeApiHeaders({
-        'Authorization': 'Bearer $token',
-        'Accept': 'application/json',
-      }));
+      request.headers.addAll(multipartBearerHeaders(token));
 
       // Add text fields
       request.fields.addAll(fields);
@@ -685,9 +690,9 @@ class HttpClientHelper {
         decoded = null;
       }
 
-      String message = 'Something went wrong';
+      String message = '';
       if (decoded != null && decoded['message'] != null) {
-        message = decoded['message'];
+        message = decoded['message'].toString();
       }
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -700,38 +705,40 @@ class HttpClientHelper {
         return ApiResponse(
           statusCode: response.statusCode,
           data: response.body,
-          message: message,
+          message: userFacingErrorMessage(),
         );
       }
     } on SocketException {
       return ApiResponse(
         statusCode: 0,
         data: '',
-        message: 'No Internet connection',
+        message: userFacingErrorMessage(),
       );
     } catch (e) {
       return ApiResponse(
         statusCode: 500,
         data: '',
-        message: 'Unexpected error: $e',
+        message: userFacingErrorMessage(),
       );
     }
   }
 
   static Future<ApiResponse> postWithMultipart(
-      String url, {
-        required Map<String, String> fields,
-        File? file,
-        String fileField = 'profile',
-      }) async {
+    String url, {
+    required Map<String, String> fields,
+    File? file,
+    String fileField = 'profile',
+  }) async {
     try {
       final request = http.MultipartRequest('POST', Uri.parse(url));
 
       // Add headers (same app keys as BaseClient / bearer requests)
-      request.headers.addAll(AppConfig.mergeApiHeaders({
-        'Accept': 'application/json',
-        ...AppSecrets.apiKeyHeaders,
-      }));
+      request.headers.addAll(
+        AppConfig.mergeApiHeaders({
+          'Accept': 'application/json',
+          ...AppSecrets.apiKeyHeaders,
+        }),
+      );
 
       // Add text fields
       request.fields.addAll(fields);
@@ -778,55 +785,51 @@ class HttpClientHelper {
         decoded = null;
       }
 
-      final message = parseApiErrorMessage(
-        decoded ?? response.body,
-        fallback: 'Something went wrong',
-      );
+      String successMessage = '';
+      if (decoded != null && decoded['message'] != null) {
+        successMessage = decoded['message'].toString();
+      }
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
         return ApiResponse(
           statusCode: response.statusCode,
           data: response.body,
-          message: message,
+          message: successMessage,
         );
       } else {
         return ApiResponse(
           statusCode: response.statusCode,
           data: response.body,
-          message: message,
+          message: userFacingErrorMessage(),
         );
       }
     } on SocketException {
       return ApiResponse(
         statusCode: 0,
         data: '',
-        message: 'No Internet connection',
+        message: userFacingErrorMessage(),
       );
     } catch (e) {
       return ApiResponse(
         statusCode: 500,
         data: '',
-        message: 'Unexpected error: $e',
+        message: userFacingErrorMessage(),
       );
     }
   }
 
   static Future<ApiResponse> postWithBearerMultipart(
-      String url,
-      String token, {
-        required Map<String, String> fields,
-        File? file,
-        String fileField = 'profile',
-        bool isBanner = false,
-      }) async {
+    String url,
+    String token, {
+    required Map<String, String> fields,
+    File? file,
+    String fileField = 'profile',
+    bool isBanner = false,
+  }) async {
     try {
       final request = http.MultipartRequest('POST', Uri.parse(url));
 
-      // Add headers
-      request.headers.addAll(AppConfig.mergeApiHeaders({
-        'Authorization': 'Bearer $token',
-        'Accept': 'application/json',
-      }));
+      request.headers.addAll(multipartBearerHeaders(token));
 
       // Add text fields
       request.fields.addAll(fields);
@@ -872,9 +875,9 @@ class HttpClientHelper {
         decoded = null;
       }
 
-      String message = 'Something went wrong';
+      String message = '';
       if (decoded != null && decoded['message'] != null) {
-        message = decoded['message'];
+        message = decoded['message'].toString();
       }
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -887,20 +890,20 @@ class HttpClientHelper {
         return ApiResponse(
           statusCode: response.statusCode,
           data: response.body,
-          message: message,
+          message: userFacingErrorMessage(),
         );
       }
     } on SocketException {
       return ApiResponse(
         statusCode: 0,
         data: '',
-        message: 'No Internet connection',
+        message: userFacingErrorMessage(),
       );
     } catch (e) {
       return ApiResponse(
         statusCode: 500,
         data: '',
-        message: 'Unexpected error: $e',
+        message: userFacingErrorMessage(),
       );
     }
   }
@@ -934,13 +937,13 @@ class HttpClientHelper {
   }
 
   static Future<ApiResponse> postWithApplicationJson(
-      String url, {
-        Map<String, String>? headers,
-        Object? body,
-        Encoding? encoding,
-      }) async {
+    String url, {
+    Map<String, String>? headers,
+    Object? body,
+    Encoding? encoding,
+  }) async {
     return _sendRequest(
-          () => _client.post(
+      () => _client.post(
         Uri.parse(url),
         headers: AppConfig.mergeApiHeaders(headers),
         body: body,
@@ -950,21 +953,22 @@ class HttpClientHelper {
   }
 
   static Future<ApiResponse> patchWithBearer(
-      String url,
-      String token, {
-        Map<String, String>? headers,
-        Object? body,
-        Encoding? encoding,
-      }) async {
+    String url,
+    String token, {
+    Map<String, String>? headers,
+    Object? body,
+    Encoding? encoding,
+  }) async {
     return _sendRequest(
-          () => _client.patch(
+      () => _client.patch(
         Uri.parse(url),
-        headers: AppConfig.mergeApiHeaders({
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          ...?headers,
-        }),
+        headers: {...bearerAppHeaders(token), ...?headers},
+        body: body,
+        encoding: encoding,
+      ),
+      retryWithToken: (newToken) => _client.patch(
+        Uri.parse(url),
+        headers: {...bearerAppHeaders(newToken), ...?headers},
         body: body,
         encoding: encoding,
       ),
@@ -972,12 +976,12 @@ class HttpClientHelper {
   }
 
   static Future<ApiResponse> deleteWithBearer(
-      String url,
-      String token, {
-        Map<String, String>? headers,
-      }) async {
+    String url,
+    String token, {
+    Map<String, String>? headers,
+  }) async {
     return _sendRequest(
-          () => _client.delete(
+      () => _client.delete(
         Uri.parse(url),
         headers: AppConfig.mergeApiHeaders({
           'Authorization': 'Bearer $token',
@@ -990,22 +994,25 @@ class HttpClientHelper {
   }
 
   static Future<ApiResponse> get(
-      String url, {
-        Map<String, String>? headers,
-      }) async {
+    String url, {
+    Map<String, String>? headers,
+  }) async {
     return _sendRequest(
-      () => _client.get(Uri.parse(url), headers: AppConfig.mergeApiHeaders(headers)),
+      () => _client.get(
+        Uri.parse(url),
+        headers: AppConfig.mergeApiHeaders(headers),
+      ),
     );
   }
 
   static Future<ApiResponse> post(
-      String url, {
-        Map<String, String>? headers,
-        Object? body,
-        Encoding? encoding,
-      }) async {
+    String url, {
+    Map<String, String>? headers,
+    Object? body,
+    Encoding? encoding,
+  }) async {
     return _sendRequest(
-          () => _client.post(
+      () => _client.post(
         Uri.parse(url),
         headers: AppConfig.mergeApiHeaders(headers),
         body: body,
@@ -1015,16 +1022,18 @@ class HttpClientHelper {
   }
 
   static Future<ApiResponse> _sendRequest(
-      Future<http.Response> Function() requestFn, {
-        Future<http.Response> Function(String newToken)? retryWithToken,
-      }) async {
+    Future<http.Response> Function() requestFn, {
+    Future<http.Response> Function(String newToken)? retryWithToken,
+  }) async {
     try {
       final response = await requestFn();
       final code = response.statusCode;
       if (code == 200 || code == 201) {
         print("✅ HTTP $code");
       } else {
-        print("❌ HTTP $code ${Uri.tryParse(response.request?.url.toString() ?? '')?.path ?? ''}");
+        print(
+          "❌ HTTP $code ${Uri.tryParse(response.request?.url.toString() ?? '')?.path ?? ''}",
+        );
       }
       log("📦 Response body: ${response.body}");
 
@@ -1051,28 +1060,36 @@ class HttpClientHelper {
       if (response.statusCode == 200 || response.statusCode == 201) {
         return _handleResponse(response);
       } else {
-        String message = "Something went wrong";
-        try {
-          final decoded = json.decode(response.body);
-          if (decoded is Map<String, dynamic> && decoded['message'] != null) {
-            message = decoded['message'];
-          }
-        } catch (e) {}
-
         return ApiResponse(
           statusCode: response.statusCode,
           data: response.body,
-          message: message,
+          message: userFacingErrorMessage(),
         );
       }
     } on SocketException {
-      return ApiResponse(statusCode: 0, data: "", message: "No Internet connection");
+      return ApiResponse(
+        statusCode: 0,
+        data: '',
+        message: userFacingErrorMessage(),
+      );
     } on HttpException {
-      return ApiResponse(statusCode: 500, data: "", message: "HTTP error");
+      return ApiResponse(
+        statusCode: 500,
+        data: '',
+        message: userFacingErrorMessage(),
+      );
     } on FormatException {
-      return ApiResponse(statusCode: 500, data: "", message: "Bad response format");
+      return ApiResponse(
+        statusCode: 500,
+        data: '',
+        message: userFacingErrorMessage(),
+      );
     } catch (e) {
-      return ApiResponse(statusCode: 500, data: "", message: "Unexpected error: $e");
+      return ApiResponse(
+        statusCode: 500,
+        data: '',
+        message: userFacingErrorMessage(),
+      );
     }
   }
 
@@ -1092,7 +1109,8 @@ class HttpClientHelper {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final newToken = data['token'] ?? data['accessToken'] ?? data['data']?['token'];
+        final newToken =
+            data['token'] ?? data['accessToken'] ?? data['data']?['token'];
         if (newToken != null && newToken.toString().isNotEmpty) {
           DbHelper().saveUserToken(newToken.toString());
           AuthDataHelper.saveUserToken(newToken.toString());

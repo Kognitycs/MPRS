@@ -446,11 +446,11 @@ class _BannerScreenState extends State<BannerScreen> {
         });
         showSnackBar(context, response.message ?? "Banner deleted");
       } else {
-        showSnackBar(context, response.message ?? "Update failed");
+        showServiceErrorSnackBar(context);
       }
     } catch (e) {
       Loader.hide();
-      showSnackBar(context, "Something went wrong: $e");
+      showServiceErrorSnackBar(context);
     }
   }
 

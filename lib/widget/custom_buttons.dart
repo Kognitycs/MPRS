@@ -101,33 +101,140 @@ class _OutlineButtonState extends State<OutlineButton> {
 class MainButton extends StatelessWidget {
   final String text;
   final VoidCallback onPressed;
+  final double height;
+  final double fontSize;
 
   const MainButton({
     Key? key,
     required this.text,
     required this.onPressed,
+    this.height = 60,
+    this.fontSize = 16,
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
       width: double.infinity,
-      height: 60,
+      height: height,
       child: ElevatedButton(
         onPressed: onPressed,
         style: ElevatedButton.styleFrom(
-          backgroundColor: AppColors.main, // You can modify this color
+          backgroundColor: AppColors.main,
+          padding:
+              height < 52
+                  ? const EdgeInsets.symmetric(horizontal: 16, vertical: 0)
+                  : null,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8), // Adjusted border radius
+            borderRadius: BorderRadius.circular(8),
           ),
         ),
         child: Text(
           text,
-          style:  TextStyle(fontSize: 16, color: AppColors.white,fontWeight: FontWeight.bold,),
+          style: TextStyle(
+            fontSize: fontSize,
+            color: AppColors.white,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Compact save + account actions for profile screens (sticky footer).
+class ProfileStickyActions extends StatelessWidget {
+  final String saveLabel;
+  final VoidCallback? onSave;
+  final VoidCallback onChangePassword;
+  final VoidCallback? onDeleteAccount;
+  final bool showDeleteAccount;
+  final Color deleteColor;
+  final String deleteLabel;
+
+  const ProfileStickyActions({
+    super.key,
+    required this.saveLabel,
+    required this.onSave,
+    required this.onChangePassword,
+    this.onDeleteAccount,
+    this.showDeleteAccount = true,
+    this.deleteColor = const Color(0xFFE53935),
+    this.deleteLabel = 'Delete',
+  });
+
+  static const _outlineHeight = 40.0;
+  static const _outlineRadius = 8.0;
+
+  Widget _changePasswordButton({bool fullWidth = false}) {
+    return SizedBox(
+      width: fullWidth ? double.infinity : null,
+      height: _outlineHeight,
+      child: OutlinedButton.icon(
+        onPressed: onChangePassword,
+        icon: const Icon(Icons.lock_outline_rounded, size: 15),
+        label: const Text('Change Password'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.main,
+          side: const BorderSide(color: AppColors.main),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(_outlineRadius),
+          ),
+          textStyle: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
   }
 
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        MainButton(
+          text: saveLabel,
+          onPressed: onSave ?? () {},
+          height: 44,
+          fontSize: 15,
+        ),
+        const SizedBox(height: 6),
+        if (showDeleteAccount)
+          Row(
+            children: [
+              Expanded(child: _changePasswordButton()),
+              const SizedBox(width: 8),
+              Expanded(
+                child: SizedBox(
+                  height: _outlineHeight,
+                  child: OutlinedButton.icon(
+                    onPressed: onDeleteAccount,
+                    icon: const Icon(Icons.delete_outline_rounded, size: 15),
+                    label: Text(deleteLabel),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: deleteColor,
+                      side: BorderSide(color: deleteColor),
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(_outlineRadius),
+                      ),
+                      textStyle: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          )
+        else
+          _changePasswordButton(fullWidth: true),
+      ],
+    );
+  }
 }
 

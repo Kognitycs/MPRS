@@ -64,8 +64,9 @@ class AuthDataHelper {
     PreferenceUtils.setString(DESIGNATION, user.designation ?? "");
     PreferenceUtils.setString(DEPARTMENT, user.department ?? "");
     PreferenceUtils.setString(ID, user.id ?? "");
-    if (user.accountId != null && user.accountId!.isNotEmpty) {
-      PreferenceUtils.setString(ACCOUNT_ID, user.accountId!);
+    final accountId = user.accountId?.trim() ?? '';
+    if (accountId.isNotEmpty) {
+      PreferenceUtils.setString(ACCOUNT_ID, accountId);
     }
     PreferenceUtils.setString(CONTACT_ID, user.contactId ?? "");
     PreferenceUtils.setString(PROFILE_IMAGE, user.profileImageUrl ?? "");
@@ -126,8 +127,13 @@ class AuthDataHelper {
       PreferenceUtils.setString(ACCOUNT_ID, accountID);
 
   static bool isAdminUser() {
-    final userType = getUserType().toLowerCase() ?? "";
-    return userType == "admin";
+    final userType = getUserType().toLowerCase().trim();
+    return userType == 'admin' || userType == 'superadmin';
+  }
+
+  /// POST `/user/opportunity/accounts` with another user’s email (Contact.Email).
+  static bool canLookupAccountsByContactEmail() {
+    return isAdminUser();
   }
 
   static bool isInternalUser() {

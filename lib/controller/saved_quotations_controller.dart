@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 import 'package:mprs_android/core/auth_data_helper.dart';
 
 import '../core/constants/api_provider.dart';
+import '../core/constants/app_strings.dart';
 import '../core/constants/data_response.dart';
 import '../core/constants/db_helper.dart';
 import '../model/get_quote_detail_model.dart';
@@ -103,16 +104,11 @@ class SavedQuotationsController extends GetxController {
         _lastLoadedAccountId = fetchingForAccount;
       } else {
         quotesList = [];
-        quotesLoadFailed = true;
         final message = response.message?.toString().trim() ?? '';
-        final hideMissingAccount =
-            message.toLowerCase().contains('account id') &&
-            AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
-        if (!hideMissingAccount) {
-          Get.snackbar(
-            "Error",
-            message.isEmpty ? "Failed to fetch data" : message,
-          );
+        final missingAccountMsg = message.toLowerCase().contains('account id');
+        quotesLoadFailed = !missingAccountMsg;
+        if (missingAccountMsg) {
+          _lastLoadedAccountId = fetchingForAccount;
         }
       }
     } catch (e, stack) {
@@ -215,18 +211,14 @@ class SavedQuotationsController extends GetxController {
       if (bookingDetailItems.isEmpty && !hasHeader) {
         errorMessage =
             lineApiOk
-                ? (lineResponse.message ??
-                    'No line items found for this quote.')
-                : (lineResponse.message ?? 'Failed to fetch quote line items.');
+                ? 'No line items found for this quote.'
+                : AppStrings.serviceNotFound;
       } else {
         errorMessage = '';
       }
 
       if (!hasHeader && !lineApiOk && !headerOk) {
-        errorMessage =
-            lineResponse.message ??
-            headerResponse.message ??
-            'Failed to fetch quote details.';
+        errorMessage = AppStrings.serviceNotFound;
       }
 
       isDetailLoading = false;
@@ -250,7 +242,7 @@ class SavedQuotationsController extends GetxController {
       ]);
       quotePdfList = [];
       quotePdfError = '';
-      errorMessage = 'Failed to fetch quote details.';
+      errorMessage = AppStrings.serviceNotFound;
     } finally {
       isDetailLoading = false;
       isPdfLoading = false;

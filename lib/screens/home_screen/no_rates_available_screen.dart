@@ -5,7 +5,9 @@ import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/core/constants/api_constants.dart';
 import 'package:mprs_android/core/constants/app_colors.dart';
 import 'package:mprs_android/core/constants/db_helper.dart';
-import 'package:mprs_android/screens/main_screen.dart';
+import 'package:get/get.dart';
+import 'package:mprs_android/controller/search_routes_controller.dart';
+import 'package:mprs_android/screens/main_tabs.dart';
 import 'package:mprs_android/screens/support_screen.dart';
 import 'package:mprs_android/service/http_client_helper.dart';
 import 'package:mprs_android/widget/common_appbar.dart';
@@ -109,16 +111,10 @@ class _NoRatesAvailableScreenState extends State<NoRatesAvailableScreen> {
   }
 
   void _goHome() {
-    final nav = Navigator.of(context);
-    if (nav.canPop()) {
-      nav.popUntil((route) => route.isFirst);
-      return;
+    if (Get.isRegistered<SearchRouteController>()) {
+      Get.find<SearchRouteController>().clearSelections();
     }
-
-    final homeNav = MainScreen.homeTabNavigatorKey.currentState;
-    if (homeNav != null && homeNav.canPop()) {
-      homeNav.popUntil((route) => route.isFirst);
-    }
+    MainTabs.open(const MainTabRequest(index: MainTabs.home));
   }
 
   void _callNumber(String number) async {

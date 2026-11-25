@@ -5,6 +5,8 @@ import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/core/constants/api_constants.dart';
 import 'package:mprs_android/core/constants/api_provider.dart';
 import 'package:mprs_android/core/constants/app_colors.dart';
+import 'package:mprs_android/core/constants/app_strings.dart';
+import 'package:mprs_android/core/utils/api_error_utils.dart';
 import 'package:mprs_android/core/constants/data_response.dart';
 import 'package:mprs_android/core/constants/base_client.dart';
 import 'package:mprs_android/core/utils/progress_dialog.dart';
@@ -27,7 +29,6 @@ class ShipmentScreen extends StatefulWidget {
 
 class _ShipmentScreenState extends State<ShipmentScreen>
     with SingleTickerProviderStateMixin {
-
   late TabController _tabController;
   final TextEditingController searchController = TextEditingController();
 
@@ -85,8 +86,8 @@ class _ShipmentScreenState extends State<ShipmentScreen>
     ]) {
       if (raw == null || raw.toString().trim().isEmpty) continue;
       final text = raw.toString().trim();
-      final parsed = DateTime.tryParse(text.split('T').first) ??
-          DateTime.tryParse(text);
+      final parsed =
+          DateTime.tryParse(text.split('T').first) ?? DateTime.tryParse(text);
       if (parsed != null) return parsed;
     }
     return null;
@@ -123,19 +124,15 @@ class _ShipmentScreenState extends State<ShipmentScreen>
     final id = item.id?.toString().trim() ?? '';
     final seed = _adminQuoteById[id];
 
-    final quoteNo = (item.name ?? seed?.name ?? '')
-        .toString()
-        .trim()
-        .toLowerCase();
-    final opportunity = (item.opportunity?.name ?? seed?.opportunityName ?? '')
-        .toString()
-        .trim()
-        .toLowerCase();
+    final quoteNo =
+        (item.name ?? seed?.name ?? '').toString().trim().toLowerCase();
+    final opportunity =
+        (item.opportunity?.name ?? seed?.opportunityName ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
 
-    final orderNo = (item.orderNumber ?? '')
-        .toString()
-        .trim()
-        .toLowerCase();
+    final orderNo = (item.orderNumber ?? '').toString().trim().toLowerCase();
 
     return quoteNo.contains(query) ||
         opportunity.contains(query) ||
@@ -156,10 +153,14 @@ class _ShipmentScreenState extends State<ShipmentScreen>
 
   Future<void> bookQuote({
     required String quoteId,
+    String? accountId,
     BuildContext? dialogContext,
   }) async {
     ProgressLoader.show(context);
-    final result = await BookingService.reserveQuoteSpace(quoteId);
+    final result = await BookingService.reserveQuoteSpace(
+      quoteId,
+      accountId: accountId,
+    );
     if (mounted) ProgressLoader.hide(context);
     if (!mounted) return;
 
@@ -173,9 +174,10 @@ class _ShipmentScreenState extends State<ShipmentScreen>
       return;
     }
 
-    final dialogNav = dialogContext != null
-        ? Navigator.of(dialogContext)
-        : Navigator.of(context, rootNavigator: true);
+    final dialogNav =
+        dialogContext != null
+            ? Navigator.of(dialogContext)
+            : Navigator.of(context, rootNavigator: true);
     if (dialogNav.canPop()) {
       dialogNav.pop();
     }
@@ -205,7 +207,7 @@ class _ShipmentScreenState extends State<ShipmentScreen>
       );
       return dataResponse;
     } catch (e) {
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -228,7 +230,7 @@ class _ShipmentScreenState extends State<ShipmentScreen>
       );
       return dataResponse;
     } catch (e) {
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -237,9 +239,10 @@ class _ShipmentScreenState extends State<ShipmentScreen>
     required bool importTab,
   }) async {
     try {
-      final filtered = (await ApiProvider().fetchAdminAppCreatedQuotations())
-          .where((q) => !q.isTestQuoteData)
-          .toList();
+      final filtered =
+          (await ApiProvider().fetchAdminAppCreatedQuotations())
+              .where((q) => !q.isTestQuoteData)
+              .toList();
 
       if (filtered.isEmpty) {
         return DataResponse(
@@ -273,9 +276,10 @@ class _ShipmentScreenState extends State<ShipmentScreen>
         debugPrint('   ... +${filtered.length - 20} more');
       }
 
-      final records = SavedQuotationsModel.sortNewestFirst(filtered)
-          .map((q) => Records.fromJson(q.toShipmentRecordJson()))
-          .toList();
+      final records =
+          SavedQuotationsModel.sortNewestFirst(
+            filtered,
+          ).map((q) => Records.fromJson(q.toShipmentRecordJson())).toList();
 
       return DataResponse(
         success: true,
@@ -284,7 +288,11 @@ class _ShipmentScreenState extends State<ShipmentScreen>
       );
     } catch (e) {
       debugPrint('❌ Admin shipments error: $e');
-      return DataResponse(message: e.toString(), success: false, body: null);
+      return DataResponse(
+        message: userFacingErrorMessage(),
+        success: false,
+        body: null,
+      );
     }
   }
 
@@ -377,15 +385,16 @@ class _ShipmentScreenState extends State<ShipmentScreen>
           hintText: 'Search by QT, order, or MSL opportunity',
           border: InputBorder.none,
           prefixIcon: const Icon(Icons.search, color: Colors.grey),
-          suffixIcon: searchController.text.isNotEmpty
-              ? IconButton(
-                  icon: const Icon(Icons.clear, size: 20),
-                  onPressed: () {
-                    searchController.clear();
-                    setState(() {});
-                  },
-                )
-              : null,
+          suffixIcon:
+              searchController.text.isNotEmpty
+                  ? IconButton(
+                    icon: const Icon(Icons.clear, size: 20),
+                    onPressed: () {
+                      searchController.clear();
+                      setState(() {});
+                    },
+                  )
+                  : null,
         ),
       ),
     );
@@ -399,26 +408,24 @@ class _ShipmentScreenState extends State<ShipmentScreen>
     return FutureBuilder<DataResponse<GetShipmentModel?>>(
       key: ValueKey("$type-$_refreshKey"),
 
-      future: type == "Import"
-          ? getShipmentImportData()
-          : getShipmentExportData(),
+      future:
+          type == "Import" ? getShipmentImportData() : getShipmentExportData(),
 
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
           return const Center(
-            child: CircularProgressIndicator(
-              color: AppColors.main,
-            ),
+            child: CircularProgressIndicator(color: AppColors.main),
           );
         }
 
         final isError = snapshot.hasError || snapshot.data?.success == false;
         final shipmentModel = snapshot.data?.body;
 
-        final List<Records> items = (shipmentModel?.records ?? [])
-            .whereType<Records>()
-            .where((item) => !_isTestShipmentRecord(item))
-            .toList();
+        final List<Records> items =
+            (shipmentModel?.records ?? [])
+                .whereType<Records>()
+                .where((item) => !_isTestShipmentRecord(item))
+                .toList();
 
         final query = searchController.text.trim().toLowerCase();
         final filteredItems = _sortRecordsNewestFirst(
@@ -435,7 +442,7 @@ class _ShipmentScreenState extends State<ShipmentScreen>
                 SliverFillRemaining(
                   hasScrollBody: false,
                   child: _buildEmptyState(
-                    message: snapshot.data?.message ?? 'Something went wrong',
+                    message: snapshot.data?.message ?? AppStrings.serviceNotFound,
                   ),
                 ),
               ],
@@ -453,9 +460,10 @@ class _ShipmentScreenState extends State<ShipmentScreen>
                 SliverFillRemaining(
                   hasScrollBody: false,
                   child: _buildEmptyState(
-                    message: query.isEmpty
-                        ? 'Your shipment lane looks a little too quite.'
-                        : 'No quote or opportunity matches your search',
+                    message:
+                        query.isEmpty
+                            ? 'Your shipment lane looks a little too quite.'
+                            : 'No quote or opportunity matches your search',
                     showGetQuoteLink: query.isEmpty,
                   ),
                 ),
@@ -573,10 +581,11 @@ class _ShipmentScreenState extends State<ShipmentScreen>
         if (seed != null) {
           Navigator.of(context, rootNavigator: true).push(
             MaterialPageRoute<void>(
-              builder: (_) => QuoteCardDetailScreen(
-                quote: seed,
-                shipmentRecord: record,
-              ),
+              builder:
+                  (_) => QuoteCardDetailScreen(
+                    quote: seed,
+                    shipmentRecord: record,
+                  ),
             ),
           );
         } else {
@@ -588,165 +597,165 @@ class _ShipmentScreenState extends State<ShipmentScreen>
         }
       },
       child: Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFE4E7EC)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ICON
-          Container(
-            height: 46,
-            width: 46,
-            decoration: BoxDecoration(
-              color: Colors.blue.shade50,
-              borderRadius: BorderRadius.circular(14),
+        margin: const EdgeInsets.only(bottom: 14),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFE4E7EC)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ICON
+            Container(
+              height: 46,
+              width: 46,
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Icon(
+                Icons.description_outlined,
+                color: AppColors.main,
+              ),
             ),
-            child: const Icon(
-              Icons.description_outlined,
-              color: AppColors.main,
-            ),
-          ),
 
-          const SizedBox(width: 12),
+            const SizedBox(width: 12),
 
-          // DETAILS
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  quoteNo,
-                  style: const TextStyle(
-                    color: AppColors.main,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
-                ),
-
-                const SizedBox(height: 4),
-
-                Text(
-                  opportunity,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
-                  ),
-                ),
-
-                const SizedBox(height: 3),
-
-                Text(
-                  account,
-                  style: TextStyle(
-                    color: Colors.grey.shade600,
-                    fontSize: 12,
-                  ),
-                ),
-
-                if (loadType.isNotEmpty) ...[
-                  const SizedBox(height: 6),
+            // DETAILS
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Text(
-                    loadType,
-                    style: TextStyle(
-                      color: Colors.grey.shade700,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                    quoteNo,
+                    style: const TextStyle(
+                      color: AppColors.main,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
                     ),
                   ),
-                ],
 
-                const SizedBox(height: 10),
+                  const SizedBox(height: 4),
 
-                Row(
-                  children: [
-                    Text(
-                      "\$$amount",
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
+                  Text(
+                    opportunity,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
                     ),
+                  ),
 
-                    const SizedBox(width: 10),
+                  const SizedBox(height: 3),
 
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isPresented
-                            ? Colors.blue.shade50
-                            : AppColors.accentLight,
-                        borderRadius: BorderRadius.circular(30),
-                      ),
-                      child: Text(
-                        status,
-                        style: TextStyle(
-                          color: isPresented ? Colors.blue : AppColors.main,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                        ),
+                  Text(
+                    account,
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+
+                  if (loadType.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      loadType,
+                      style: TextStyle(
+                        color: Colors.grey.shade700,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
-                ),
-              ],
-            ),
-          ),
 
-          // RIGHT SIDE
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                expiryDate,
-                style: TextStyle(
-                  color: Colors.grey.shade600,
-                  fontSize: 12,
-                ),
+                  const SizedBox(height: 10),
+
+                  Row(
+                    children: [
+                      Text(
+                        "\$$amount",
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+
+                      const SizedBox(width: 10),
+
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color:
+                              isPresented
+                                  ? Colors.blue.shade50
+                                  : AppColors.accentLight,
+                          borderRadius: BorderRadius.circular(30),
+                        ),
+                        child: Text(
+                          status,
+                          style: TextStyle(
+                            color: isPresented ? Colors.blue : AppColors.main,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
+            ),
 
-              const SizedBox(height: 18),
+            // RIGHT SIDE
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  expiryDate,
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
 
-              if (!AuthDataHelper.isAdminUser())
-                SizedBox(
-                  height: 36,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.main,
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
+                const SizedBox(height: 18),
+
+                if (!AuthDataHelper.isAdminUser())
+                  SizedBox(
+                    height: 36,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.main,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      onPressed: () {
+                        final seed = _adminQuoteById[quoteId.trim()];
+                        _showBookingDialog(
+                          quoteId: quoteId,
+                          accountId: seed?.accountId,
+                        );
+                      },
+                      child: const Text(
+                        "Book Now",
+                        style: TextStyle(color: Colors.white, fontSize: 12),
                       ),
                     ),
-                    onPressed: () {
-                      _showBookingDialog(quoteId: quoteId);
-                    },
-                    child: const Text(
-                      "Book Now",
-                      style: TextStyle(color: Colors.white, fontSize: 12),
-                    ),
                   ),
-                ),
-            ],
-          ),
-        ],
+              ],
+            ),
+          ],
+        ),
       ),
-    ),
     );
   }
 
   String _formatAmount(dynamic value) {
     if (value == null) return '0';
-    final num? parsed = value is num
-        ? value
-        : num.tryParse(value.toString().replaceAll(',', ''));
+    final num? parsed =
+        value is num
+            ? value
+            : num.tryParse(value.toString().replaceAll(',', ''));
     if (parsed == null) return value.toString();
     return NumberFormat('#,##0').format(parsed);
   }
@@ -767,7 +776,7 @@ class _ShipmentScreenState extends State<ShipmentScreen>
   // BOOKING DIALOG
   // --------------------------------------------------------------------------
 
-  void _showBookingDialog({required String quoteId}) {
+  void _showBookingDialog({required String quoteId, String? accountId}) {
     showDialog(
       context: context,
       builder: (dialogContext) {
@@ -794,10 +803,7 @@ class _ShipmentScreenState extends State<ShipmentScreen>
 
                 const Text(
                   "Confirm Your Booking",
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
 
                 const SizedBox(height: 12),
@@ -824,7 +830,11 @@ class _ShipmentScreenState extends State<ShipmentScreen>
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.check, color: Colors.green, size: 20),
+                          const Icon(
+                            Icons.check,
+                            color: Colors.green,
+                            size: 20,
+                          ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Text(
@@ -838,7 +848,11 @@ class _ShipmentScreenState extends State<ShipmentScreen>
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.check, color: Colors.green, size: 20),
+                          const Icon(
+                            Icons.check,
+                            color: Colors.green,
+                            size: 20,
+                          ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Text(
@@ -896,6 +910,7 @@ class _ShipmentScreenState extends State<ShipmentScreen>
                           onPressed: () async {
                             await bookQuote(
                               quoteId: quoteId,
+                              accountId: accountId,
                               dialogContext: dialogContext,
                             );
                           },

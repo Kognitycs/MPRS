@@ -68,7 +68,7 @@ class _NotificationScreenState extends State<NotificationScreen>
     });
   }
 
-  /// Load SQLite instantly; remote API only for Admin/Internal.
+  /// Load SQLite instantly; remote API only for Admin.
   Future<void> _hydrateInbox({bool forceDb = false}) async {
     setState(() {
       if (_notifications.isEmpty) _isLoading = true;
@@ -88,6 +88,7 @@ class _NotificationScreenState extends State<NotificationScreen>
         _notifications = List<NotificationItem>.from(_store.items);
         _isLoading = false;
       });
+      await NotificationPollService.markVisibleInboxAsSeen();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -109,6 +110,7 @@ class _NotificationScreenState extends State<NotificationScreen>
           setState(() {
             _notifications = List<NotificationItem>.from(_store.items);
           });
+          await NotificationPollService.markVisibleInboxAsSeen();
         })
         .catchError((_) {});
   }

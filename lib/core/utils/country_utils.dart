@@ -203,6 +203,48 @@ class CountryUtils {
   }
 
 
+  /// Indian states/UTs for Salesforce salesperson lookup (`state` query param).
+  static List<String> getIndianStates() {
+    return const [
+      'Andhra Pradesh',
+      'Arunachal Pradesh',
+      'Assam',
+      'Bihar',
+      'Chhattisgarh',
+      'Goa',
+      'Gujarat',
+      'Haryana',
+      'Himachal Pradesh',
+      'Jharkhand',
+      'Karnataka',
+      'Kerala',
+      'Madhya Pradesh',
+      'Maharashtra',
+      'Manipur',
+      'Meghalaya',
+      'Mizoram',
+      'Nagaland',
+      'Odisha',
+      'Punjab',
+      'Rajasthan',
+      'Sikkim',
+      'Tamil Nadu',
+      'Telangana',
+      'Tripura',
+      'Uttar Pradesh',
+      'Uttarakhand',
+      'West Bengal',
+      'Andaman and Nicobar Islands',
+      'Chandigarh',
+      'Dadra and Nagar Haveli and Daman and Diu',
+      'Delhi',
+      'Jammu and Kashmir',
+      'Ladakh',
+      'Lakshadweep',
+      'Puducherry',
+    ];
+  }
+
   static List<String> getRegion() {
     return [
       "Africa",
@@ -290,5 +332,113 @@ class CountryUtils {
     CountryCodeModel(name: "Vietnam", code: "VN", dialCode: "+84", flag: "🇻🇳"),
   ];
 
+  /// ISO 3166-2:IN codes for Salesforce `Address__StateCode__s` (India).
+  static const Map<String, String> _indianStateToSalesforceCode = {
+    'Andhra Pradesh': 'AP',
+    'Arunachal Pradesh': 'AR',
+    'Assam': 'AS',
+    'Bihar': 'BR',
+    'Chhattisgarh': 'CT',
+    'Goa': 'GA',
+    'Gujarat': 'GJ',
+    'Haryana': 'HR',
+    'Himachal Pradesh': 'HP',
+    'Jharkhand': 'JH',
+    'Karnataka': 'KA',
+    'Kerala': 'KL',
+    'Madhya Pradesh': 'MP',
+    'Maharashtra': 'MH',
+    'Manipur': 'MN',
+    'Meghalaya': 'ML',
+    'Mizoram': 'MZ',
+    'Nagaland': 'NL',
+    'Odisha': 'OR',
+    'Punjab': 'PB',
+    'Rajasthan': 'RJ',
+    'Sikkim': 'SK',
+    'Tamil Nadu': 'TN',
+    'Telangana': 'TG',
+    'Tripura': 'TR',
+    'Uttar Pradesh': 'UP',
+    'Uttarakhand': 'UT',
+    'West Bengal': 'WB',
+    'Andaman and Nicobar Islands': 'AN',
+    'Chandigarh': 'CH',
+    'Dadra and Nagar Haveli and Daman and Diu': 'DH',
+    'Delhi': 'DL',
+    'Jammu and Kashmir': 'JK',
+    'Ladakh': 'LA',
+    'Lakshadweep': 'LD',
+    'Puducherry': 'PY',
+  };
 
+  static String salesforceIndianStateCode(String? stateName) {
+    final name = stateName?.trim();
+    if (name == null || name.isEmpty) return '';
+    if (name.length == 2 && RegExp(r'^[A-Za-z]{2}$').hasMatch(name)) {
+      return name.toUpperCase();
+    }
+    return _indianStateToSalesforceCode[name] ?? name;
+  }
+
+  /// ISO 3166-1 alpha-2 for APIs/Salesforce `Address__CountryCode__s` picklists.
+  static String salesforceCountryCode(String? countryName) {
+    final name = countryName?.trim();
+    if (name == null || name.isEmpty) return '';
+    if (name.length == 2 && RegExp(r'^[A-Za-z]{2}$').hasMatch(name)) {
+      return name.toUpperCase();
+    }
+    for (final c in countryCodesList) {
+      if (c.name.toLowerCase() == name.toLowerCase()) return c.code;
+    }
+    const aliases = <String, String>{
+      'United Arab Emirates': 'AE',
+      'United Kingdom': 'GB',
+      'United States of America': 'US',
+      'United States': 'US',
+    };
+    return aliases[name] ?? name;
+  }
+
+  /// Display label for a stored country (ISO code or full name).
+  static String? displayCountryName(String? stored) {
+    final value = stored?.trim();
+    if (value == null || value.isEmpty) return null;
+    if (value.length == 2 && RegExp(r'^[A-Za-z]{2}$').hasMatch(value)) {
+      final code = value.toUpperCase();
+      for (final c in countryCodesList) {
+        if (c.code.toUpperCase() == code) return c.name;
+      }
+      const codeToName = {
+        'AE': 'United Arab Emirates',
+        'GB': 'United Kingdom',
+        'US': 'United States of America',
+      };
+      return codeToName[code] ?? value;
+    }
+    if (getAllCountries().any((c) => c.toLowerCase() == value.toLowerCase())) {
+      return getAllCountries().firstWhere(
+        (c) => c.toLowerCase() == value.toLowerCase(),
+      );
+    }
+    return value;
+  }
+
+  /// Display label for stored Indian state (SF code or full name).
+  static String? displayIndianStateName(String? stored) {
+    final value = stored?.trim();
+    if (value == null || value.isEmpty) return null;
+    if (value.length == 2 && RegExp(r'^[A-Za-z]{2}$').hasMatch(value)) {
+      final code = value.toUpperCase();
+      for (final entry in _indianStateToSalesforceCode.entries) {
+        if (entry.value.toUpperCase() == code) return entry.key;
+      }
+      return value;
+    }
+    if (_indianStateToSalesforceCode.containsKey(value)) return value;
+  for (final name in getIndianStates()) {
+      if (name.toLowerCase() == value.toLowerCase()) return name;
+    }
+    return value;
+  }
 }

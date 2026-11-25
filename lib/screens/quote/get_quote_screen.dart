@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'package:mprs_android/core/app_config.dart';
+import 'package:mprs_android/core/utils/api_error_utils.dart';
 import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/core/constants/api_constants.dart';
 import 'package:mprs_android/core/constants/app_colors.dart';
@@ -14,7 +15,9 @@ import 'package:mprs_android/screens/quote/price_calculation.dart';
 import 'package:mprs_android/core/utils/url_launcher_helper.dart';
 import 'package:mprs_android/widget/common_appbar.dart';
 import 'package:mprs_android/service/most_used_ports_service.dart';
+import 'package:mprs_android/service/http_client_helper.dart';
 
+import '../../controller/booking_controller.dart';
 import '../../controller/search_routes_controller.dart';
 import '../../controller/saved_quotations_controller.dart';
 import '../../model/icd_model.dart';
@@ -26,6 +29,7 @@ import '../main_screen.dart';
 class _QuoteLineItem {
   final String product2Id;
   final String pricebookEntryId;
+  final String? pricebook2Id;
   final String productName;
   final int quantity;
   final double unitPrice;
@@ -39,6 +43,7 @@ class _QuoteLineItem {
   const _QuoteLineItem({
     required this.product2Id,
     required this.pricebookEntryId,
+    this.pricebook2Id,
     required this.productName,
     required this.quantity,
     required this.unitPrice,
@@ -51,6 +56,7 @@ class _QuoteLineItem {
   });
 
   _QuoteLineItem copyWith({
+    String? pricebook2Id,
     double? unitPrice,
     double? listPrice,
     double? finalSellingPrice,
@@ -59,6 +65,7 @@ class _QuoteLineItem {
     return _QuoteLineItem(
       product2Id: product2Id,
       pricebookEntryId: pricebookEntryId,
+      pricebook2Id: pricebook2Id ?? this.pricebook2Id,
       productName: productName,
       quantity: quantity,
       unitPrice: unitPrice ?? this.unitPrice,
@@ -74,35 +81,74 @@ class _QuoteLineItem {
   static _QuoteLineItem fromInternalEdit(InternalQuoteLineEdit edit) {
     final sell = edit.sellPrice;
     final buy = edit.buyPrice;
-    final sendsSellAsUnit = edit.isMarginProduct;
+    final tax =
+        edit.taxPercent == 18 || edit.taxPercent == 5
+            ? edit.taxPercent
+            : defaultTaxPercentForProduct(edit.productName);
     return _QuoteLineItem(
       product2Id: edit.product2Id,
       pricebookEntryId: edit.pricebookEntryId,
+      pricebook2Id: edit.pricebook2Id,
       productName: edit.productName,
       quantity: edit.quantity,
-      unitPrice: sendsSellAsUnit ? sell : buy,
-      listPrice: sendsSellAsUnit ? sell : buy,
+      unitPrice: sell,
+      listPrice: sell,
       finalSellingPrice: sell,
       finalBuyingPrice: buy,
       chargeType: edit.chargeType,
       currency: edit.currency,
-      taxPercent: edit.taxPercent > 0 ? edit.taxPercent : null,
+      taxPercent: tax,
     );
   }
 
-  Map<String, dynamic> toJson() => {
-    'Product2Id': product2Id,
-    'PricebookEntryId': pricebookEntryId,
-    'Product': productName,
-    'Quantity': quantity,
-    'UnitPrice': unitPrice.round(),
-    'ListPrice': listPrice.round(),
-    'finalSellingPrice': finalSellingPrice.round(),
-    'finalBuyingPrice': finalBuyingPrice.round(),
-    'chargeType': chargeType,
-    'currency': currency,
-    if (taxPercent != null) 'Tax__c': taxPercent,
-  };
+  /// GST slab per line: 18% (ocean freight) or 5% (other charges) unless user picked on Price step.
+  int get resolvedTaxSlab {
+    final t = taxPercent;
+    if (t != null && (t == 5 || t == 18)) return t.round();
+    return defaultTaxPercentForProduct(productName).round();
+  }
+
+  /// Full line map (debug / local use).
+  Map<String, dynamic> toJson() {
+    return {
+      'Product2Id': product2Id,
+      'PricebookEntryId': pricebookEntryId,
+      'Product': productName,
+      'Quantity': quantity,
+      'UnitPrice': unitPrice.round(),
+      'ListPrice': listPrice.round(),
+      'finalSellingPrice': finalSellingPrice.round(),
+      'finalBuyingPrice': finalBuyingPrice.round(),
+      'chargeType': chargeType,
+      'currency': currency,
+    };
+  }
+
+  /// `POST /user/create/quote`. Every line uses the selected rate's Pricebook2Id.
+  /// The server maps Product2Id to an active entry in that book and keeps these prices.
+  /// UnitPrice and ListPrice follow the sell price. TaxPercent is the line GST slab.
+  Map<String, dynamic> toCreateQuoteJson({
+    required String quotePricebook2Id,
+  }) {
+    final bookPrice = finalBuyingPrice.round();
+    final sell = finalSellingPrice.round();
+    // Salesforce line total is UnitPrice × Quantity, so both prices follow the sell.
+    final unit = sell > 0 ? sell : bookPrice;
+    return {
+      'Product2Id': product2Id,
+      'PricebookEntryId': pricebookEntryId,
+      'Pricebook2Id': quotePricebook2Id.trim(),
+      'Product': productName,
+      'Quantity': quantity,
+      'UnitPrice': unit,
+      'ListPrice': unit,
+      'finalSellingPrice': sell,
+      'finalBuyingPrice': bookPrice,
+      'chargeType': chargeType,
+      'currency': currency,
+      'TaxPercent': resolvedTaxSlab,
+    };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -406,6 +452,8 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
     }
     if (validTill != null && validTill.isNotEmpty) {
       validTillController.text = validTill;
+    } else {
+      _syncValidTillFromValidFrom();
     }
     if (widget.initialWeightPerContainer?.isNotEmpty == true) {
       final netWt = widget.initialWeightPerContainer!.trim();
@@ -438,30 +486,38 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
     return '${parts[0]}-${parts[1].padLeft(2, '0')}-${parts[2].padLeft(2, '0')}';
   }
 
-  Future<String?> _ensureOpportunityId() async {
-    final existing = _resolvedOpportunityId;
-    if (existing != null && existing.isNotEmpty) return existing;
+  /// Valid Till = Valid From + 2 days (quote business rule).
+  void _syncValidTillFromValidFrom() {
+    final from = validFromController.text.trim();
+    final till = SearchRouteController.validTillFromValidFrom(from);
+    if (till != null && till.isNotEmpty) {
+      validTillController.text = till;
+    }
+  }
 
-    if (!Get.isRegistered<SearchRouteController>()) return null;
+  Future<String?> _ensureOpportunityId() async {
+    if (!Get.isRegistered<SearchRouteController>()) {
+      final existing = _resolvedOpportunityId;
+      if (existing != null && existing.isNotEmpty) return existing;
+      return null;
+    }
     final searchCtrl = Get.find<SearchRouteController>();
-    if (!searchCtrl.shouldCreateOpportunity) return null;
+    if (!searchCtrl.shouldCreateOpportunity) {
+      final existing = _resolvedOpportunityId;
+      if (existing != null && existing.isNotEmpty) return existing;
+      return null;
+    }
 
     try {
-      final resp = await searchCtrl.createOpportunityApi();
-      if (resp.statusCode != 200 && resp.statusCode != 201) return null;
+      final id = await searchCtrl.ensureOpportunityForSelectedAccount();
+      final till = searchCtrl.lastValidTill;
 
-      final body = jsonDecode(resp.data);
-      if (body is! Map || body['success'] != true) return null;
-
-      final id = SearchRouteController.parseOpportunityIdFromBody(body);
-      final till = SearchRouteController.parseValidTillFromBody(body);
-      searchCtrl.lastOpportunityId = id;
-      searchCtrl.lastValidTill = till;
-
-      if (id != null) {
+      if (id != null && id.isNotEmpty) {
         opportunityIdController.text = id;
       }
-      if (till != null && validTillController.text.trim().isEmpty) {
+      if (till != null &&
+          till.isNotEmpty &&
+          validTillController.text.trim().isEmpty) {
         validTillController.text = till;
       }
       return id;
@@ -531,15 +587,17 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
 
     debugPrint("SELECTED SIZE NORMALIZED : $selectedSize");
 
-    final prepared = widget.preparedLineEdits;
-    if (prepared != null && prepared.isNotEmpty) {
-      return prepared.map(_QuoteLineItem.fromInternalEdit).toList();
+    final mlo = widget.selectedMloCode?.trim() ?? '';
+    PricebookEntryModel? rateAnchor;
+    if (Get.isRegistered<SearchRouteController>()) {
+      rateAnchor = Get.find<SearchRouteController>().internalMatchedRateEntry;
     }
 
     final entries =
         allEntries.where((e) {
           // Never auto-include THC — it must be explicitly selected
           if (e.productName.toLowerCase().contains('thc')) return false;
+          if (mlo.isNotEmpty && e.mloCode.trim() != mlo) return false;
 
           // No size selected — include everything
           if (selectedSize.isEmpty) return true;
@@ -567,10 +625,15 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
       return [];
     }
 
-    final oceanRows =
-        entries
-            .where((e) => e.productName.toUpperCase().contains('OCEAN FREIGHT'))
-            .toList();
+    final oceanRows = () {
+      if (rateAnchor != null &&
+          rateAnchor.productName.toUpperCase().contains('OCEAN FREIGHT')) {
+        return [rateAnchor];
+      }
+      return entries
+          .where((e) => e.productName.toUpperCase().contains('OCEAN FREIGHT'))
+          .toList();
+    }();
     final otherRows =
         entries
             .where(
@@ -579,11 +642,26 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
             .toList()
           ..sort((a, b) => a.productName.compareTo(b.productName));
 
+    final prepared = widget.preparedLineEdits;
+    if (_isInternalSalesUser && prepared != null && prepared.isNotEmpty) {
+      final edited = [
+        for (final edit in prepared) _QuoteLineItem.fromInternalEdit(edit),
+      ];
+      for (final line in edited) {
+        debugPrint(
+          '📦 Edited sell "${line.productName}" | '
+          'sell=${line.finalSellingPrice} | buy=${line.finalBuyingPrice}',
+        );
+      }
+      debugPrint('📦 Internal quote lines from edit price: ${edited.length}');
+      return edited;
+    }
+
     final sortedEntries = [...oceanRows, ...otherRows];
     final userType = AuthDataHelper.getUserType();
 
     final qty = int.tryParse(numberOfContainersController.text) ?? 1;
-    return sortedEntries.map((entry) {
+    var lines = sortedEntries.map((entry) {
       final result = PricingCalculator.calculate(
         entry: entry,
         userType: userType,
@@ -608,6 +686,7 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
       return _QuoteLineItem(
         product2Id: entry.product2Id ?? '',
         pricebookEntryId: entry.id,
+        pricebook2Id: pricebook2IdForEntry(entry, allEntries),
         productName: entry.productName,
         quantity: qty,
         unitPrice: apiUnitPrice,
@@ -616,29 +695,92 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
         finalBuyingPrice: buy,
         chargeType: _resolveChargeType(entry),
         currency: entry.mprsCurrencyC ?? 'USD',
+        taxPercent: defaultTaxPercentForProduct(entry.productName),
       );
     }).toList();
+
+    debugPrint(
+      '📒 Quote lines kept (full breakdown): ${lines.length}',
+    );
+    return lines;
   }
 
   String _resolveChargeType(PricebookEntryModel entry) {
     return 'Origin Charges';
   }
 
-  /// User-entered goods value, or null when the optional field is left empty.
+  /// User-entered goods value, or null when the field is left empty.
   int? _parsedGoodsValue() {
     final text = goodsValueController.text.trim();
     if (text.isEmpty) return null;
     final value = double.tryParse(text);
-    if (value == null || value <= 0) return null;
+    if (value == null || value < 0) return null;
     return value.round();
   }
 
-  /// API `/user/create/quote` requires `goodsValue` as a positive number (Joi).
-  /// When the user skips the optional field, send a minimal placeholder so booking succeeds.
-  num _goodsValueForApi() {
-    final parsed = _parsedGoodsValue();
-    if (parsed != null && parsed > 0) return parsed;
-    return 0.01;
+  /// Selected rate's pricebook. Breakdown lines from other books are stamped with this id.
+  String? _resolveQuotePricebook2Id() {
+    if (Get.isRegistered<SearchRouteController>()) {
+      final selected =
+          Get.find<SearchRouteController>().selectedQuotePricebook2Id?.trim();
+      if (selected != null && selected.isNotEmpty) {
+        debugPrint('📒 Quote Pricebook2Id: $selected (selected rate)');
+        return selected;
+      }
+    }
+
+    final entries = widget.pricebookEntries ?? [];
+    if (entries.isEmpty) return null;
+
+    PricebookEntryModel? anchor;
+    if (Get.isRegistered<SearchRouteController>()) {
+      anchor = Get.find<SearchRouteController>().internalMatchedRateEntry;
+    }
+    if (anchor == null) {
+      final mlo = widget.selectedMloCode?.trim() ?? '';
+      if (mlo.isNotEmpty) {
+        for (final e in entries) {
+          if (e.mloCode.trim() == mlo &&
+              e.productName.toUpperCase().contains('OCEAN FREIGHT')) {
+            anchor = e;
+            break;
+          }
+        }
+      }
+    }
+
+    if (anchor != null) {
+      final direct = anchor.pricebook2Id?.trim();
+      if (direct != null && direct.isNotEmpty) {
+        debugPrint('📒 Quote Pricebook2Id: $direct (anchor ${anchor.id})');
+        return direct;
+      }
+      for (final e in entries) {
+        if (e.id == anchor.id) {
+          final id = e.pricebook2Id?.trim();
+          if (id != null && id.isNotEmpty) {
+            debugPrint('📒 Quote Pricebook2Id: $id (anchor ${anchor.id})');
+            return id;
+          }
+        }
+      }
+    }
+
+    final size =
+        (selectedContainerSize?.trim().isNotEmpty == true
+                ? selectedContainerSize
+                : widget.initialContainerSize)
+            ?.trim() ??
+        '';
+    final resolved = anchorPricebook2Id(
+      allEntries: entries,
+      selectedContainerSize: size,
+      anchorEntry: anchor,
+    );
+    debugPrint(
+      '📒 Quote Pricebook2Id: $resolved (fallback, anchor ${anchor?.id})',
+    );
+    return resolved;
   }
 
   List<_QuoteLineItem> _applyConfirmedSellPrice(
@@ -741,11 +883,33 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
 
     try {
       var opportunityId = _resolvedOpportunityId;
+      if (widget.embeddedInSearchFlow &&
+          Get.isRegistered<SearchRouteController>()) {
+        final searchCtrl = Get.find<SearchRouteController>();
+        if (searchCtrl.shouldCreateOpportunity) {
+          opportunityId =
+              await searchCtrl.ensureOpportunityForSelectedAccount();
+          if (opportunityId != null && opportunityId.isNotEmpty) {
+            opportunityIdController.text = opportunityId;
+            final till = searchCtrl.lastValidTill;
+            if (till != null &&
+                till.isNotEmpty &&
+                validTillController.text.trim().isEmpty) {
+              validTillController.text = till;
+            }
+          }
+        }
+      }
       if (opportunityId == null || opportunityId.isEmpty) {
         opportunityId = await _ensureOpportunityId();
       }
       if (opportunityId == null || opportunityId.isEmpty) {
-        _snack('Opportunity ID missing', Colors.red);
+        _snack(
+          widget.embeddedInSearchFlow
+              ? 'Could not create opportunity for the selected account'
+              : 'Opportunity ID missing',
+          Colors.red,
+        );
         return false;
       }
       if (validFromController.text.isEmpty ||
@@ -756,15 +920,10 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
 
       final token = AuthDataHelper.getToken();
       final formattedDate = _formatQuoteDate(validFromController.text);
-      final formattedValidTill =
-          validTillController.text.trim().isEmpty
-              ? null
-              : _formatQuoteDate(validTillController.text.trim());
       final netWeight =
           (double.tryParse(weightPerContainerController.text) ?? 0).round();
       final grossWeight = netWeight;
-      //Arnima - make not editable fields date and send the data from those fields in payload instead of user input
-      final lineItems =
+      var lineItems =
           _confirmedSellTotal == null
               ? _buildLineItems()
               : _applyConfirmedSellPrice(
@@ -772,42 +931,57 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
                 _confirmedSellTotal!,
               );
       debugPrint('📦 Line items count: ${lineItems.length}');
-      final goodsValue = _goodsValueForApi();
-
-      final pricebook2Id = (widget.pricebookEntries ?? [])
-          .map((e) => e.pricebook2Id)
-          .firstWhere((id) => id != null && id.isNotEmpty, orElse: () => null);
-
-      //quotename inprogress
-      //opprtunityid remove in getquote
+      if (lineItems.isEmpty) {
+        _snack('No quote line items to submit', Colors.red);
+        return false;
+      }
+      final missingProductIds =
+          lineItems
+              .where((li) => li.product2Id.trim().isEmpty)
+              .map((li) => li.productName)
+              .toList();
+      if (missingProductIds.isNotEmpty) {
+        _snack(
+          'Missing product id for: ${missingProductIds.take(3).join(', ')}',
+          Colors.red,
+        );
+        return false;
+      }
+      final goodsValue = _parsedGoodsValue();
+      final pricebook2Id = _resolveQuotePricebook2Id();
+      if (pricebook2Id == null || pricebook2Id.isEmpty) {
+        _snack(
+          'Could not resolve pricebook for the selected rate',
+          Colors.red,
+        );
+        return false;
+      }
 
       // ── Build quote payload ───────────────────────────────────────────
       final ts = DateTime.now().millisecondsSinceEpoch % 100000;
       final quoteName = 'QT-${ts.toString().padLeft(5, '0')}';
 
-      String? quotedAccountId;
-      if (Get.isRegistered<SearchRouteController>()) {
-        quotedAccountId =
-            Get.find<SearchRouteController>()
-                .selectedSalesAccount
-                .value
-                ?.accountIdForApi;
-      }
+      // Account is set on create/opportunity (Search Rates account pick), not on create/quote.
       final quotedTotal = lineItems.fold<double>(
         0,
         (sum, line) => sum + line.finalSellingPrice * line.quantity,
       );
 
+      const _blockedLineKeys = {
+        'Tax__c',
+        'taxSlab',
+        'taxPercent',
+        'tax',
+        'Tax',
+      };
+
       final quotePayload = {
         'quote': {
           'name': quoteName,
           'opportunityId': opportunityId,
-          if (quotedAccountId != null) 'AccountId': quotedAccountId,
           if (_confirmedSellTotal != null) 'TotalPrice': quotedTotal,
           if (_confirmedSellTotal != null) 'confirmedSellPrice': quotedTotal,
-          if (pricebook2Id != null) 'Pricebook2Id': pricebook2Id,
-          if (formattedValidTill != null) 'validTill': formattedValidTill,
-          if (formattedValidTill != null) 'valid_till_c': formattedValidTill,
+          'Pricebook2Id': pricebook2Id,
           'loadType': selectedLoadType == 'AIR' ? 'Air' : selectedLoadType,
           if (selectedReceiptId != null) 'placeOfReceipt': selectedReceiptId,
           if (selectedDestinationId != null)
@@ -819,28 +993,53 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
           'portOfLoading': polId,
           'portOfDischarge': podId,
           'weightPerContainer': netWeight,
-          'goodsValue': goodsValue,
+          if (goodsValue != null) 'goodsValue': goodsValue,
           'additionalInfo': additionalInfoController.text,
           'grossWeight': grossWeight,
           'validFrom': formattedDate,
         },
-        'quoteLineItems': lineItems.map((li) => li.toJson()).toList(),
+        'quoteLineItems':
+            lineItems
+                .map(
+                  (li) => li.toCreateQuoteJson(
+                    quotePricebook2Id: pricebook2Id,
+                  ),
+                )
+                .toList(),
       };
+
+      final lines = quotePayload['quoteLineItems'] as List<dynamic>;
+      quotePayload['quoteLineItems'] = [
+        for (final raw in lines)
+          if (raw is Map<String, dynamic>)
+            Map<String, dynamic>.from(raw)
+              ..removeWhere((k, _) => _blockedLineKeys.contains(k)),
+      ];
+
+      _logQuotePricebookAlignment(lineItems, pricebook2Id);
+
+      final lineItemsOut = quotePayload['quoteLineItems'] as List<dynamic>;
+      if (lineItemsOut.isNotEmpty) {
+        final firstLine = lineItemsOut.first;
+        if (firstLine is Map) {
+          debugPrint(
+            '📋 Line 1 Pricebook2Id=${firstLine['Pricebook2Id']}',
+          );
+        }
+      }
 
       debugPrint('📤 FINAL QUOTE PAYLOAD:\n${jsonEncode(quotePayload)}');
       log('📤 FINAL QUOTE PAYLOAD:\n${jsonEncode(quotePayload)}');
 
-      final response = await http.post(
-        Uri.parse(ApiConstants.createQuote),
-        headers: AppConfig.mergeApiHeaders({
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        }),
+      final response = await HttpClientHelper.postWithBearer(
+        ApiConstants.createQuote,
+        token,
+        headers: const {'Content-Type': 'application/json'},
         body: jsonEncode(quotePayload),
       );
 
       debugPrint('📥 STATUS: ${response.statusCode}');
-      log('📥 Quote response ${response.statusCode}: ${response.body}');
+      log('📥 Quote response ${response.statusCode}: ${response.data}');
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         submitted = true;
@@ -851,6 +1050,9 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
         _snack('✅ Quote submitted successfully!', Colors.green);
         if (Get.isRegistered<SavedQuotationsController>()) {
           await Get.find<SavedQuotationsController>().fetchSavedQuotes();
+        }
+        if (Get.isRegistered<BookingController>()) {
+          await Get.find<BookingController>().getInProgressBookings();
         }
         await Future.delayed(const Duration(milliseconds: 800));
         if (mounted) {
@@ -867,12 +1069,12 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
           );
         }
       } else {
-        _logQuoteSubmitFailure(response.statusCode, response.body);
-        _showServiceError();
+        _logQuoteSubmitFailure(response.statusCode, response.data);
+        _showQuoteSubmitError(response.statusCode, response.data);
       }
     } catch (e, stack) {
       log('❌ Quote submit error: $e\n$stack');
-      _showServiceError();
+      _showQuoteSubmitError(null, e.toString());
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -914,27 +1116,71 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
     );
   }
 
+  void _logQuotePricebookAlignment(
+    List<_QuoteLineItem> items,
+    String headerPb,
+  ) {
+    final entries = widget.pricebookEntries ?? [];
+    if (entries.isEmpty) return;
+    final byId = {for (final e in entries) e.id: e};
+    var mismatch = 0;
+    for (final li in items) {
+      final row = byId[li.pricebookEntryId];
+      if (row == null) continue;
+      final rowPb = pricebook2IdForEntry(row, entries) ?? '(none)';
+      if (rowPb != headerPb) {
+        mismatch++;
+        debugPrint(
+          '⚠️ PB mismatch: ${li.productName} entry=${li.pricebookEntryId} pb=$rowPb ≠ header $headerPb',
+        );
+      }
+    }
+    if (mismatch == 0) {
+      debugPrint(
+        '✅ All ${items.length} quote lines align with Pricebook2Id $headerPb',
+      );
+    } else {
+      debugPrint(
+        '⚠️ $mismatch/${items.length} lines on a different pricebook than header',
+      );
+    }
+  }
+
   void _logQuoteSubmitFailure(int statusCode, String body) {
     log('❌ Quote submit failed. HTTP $statusCode');
     log('❌ Quote error body: $body');
+    debugPrint('❌ Quote submit failed. HTTP $statusCode');
+    debugPrint('❌ Quote error body: $body');
     try {
       final errorData = jsonDecode(body);
       if (errorData is Map) {
         final message = errorData['message']?.toString().trim();
         final status = errorData['status'];
+        final details = errorData['details'];
         log(
           '❌ Quote server error: status=$status message=${message ?? '(none)'}',
         );
+        if (details != null) {
+          debugPrint('❌ Quote server details: $details');
+          log('❌ Quote server details: $details');
+        }
       }
     } catch (e) {
       log('❌ Quote error body was not JSON: $e');
     }
   }
 
-  void _showServiceError() {
+  void _showQuoteSubmitError(int? statusCode, dynamic body) {
+    final parsed = parseApiErrorMessage(
+      body,
+      fallback:
+          statusCode == 404
+              ? AppStrings.serviceNotFound
+              : AppStrings.somethingWentWrong,
+    );
     Get.snackbar(
       'Error',
-      AppStrings.serviceNotFound,
+      parsed,
       backgroundColor: Colors.red,
       colorText: Colors.white,
     );
@@ -980,355 +1226,332 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
           ],
           const SizedBox(height: 12),
 
-              // ── Personal Information ──────────────────────────────────
-              // ── Personal Information ──────────────────────────────────
-              _sectionCard(
-                title: 'Personal Information',
-                icon: Icons.person_outline_rounded,
-                trailing: IconButton(
-                  icon: Icon(
-                    isPersonalInfoExpanded
-                        ? Icons.keyboard_arrow_up_rounded
-                        : Icons.keyboard_arrow_down_rounded,
-                  ),
-                  onPressed: () {
-                    setState(() {
-                      isPersonalInfoExpanded = !isPersonalInfoExpanded;
-                    });
-                  },
-                ),
-                children:
-                    isPersonalInfoExpanded
-                        ? [
-                          _field(
-                            nameController,
-                            'Full Name',
-                            Icons.person_rounded,
-                            readOnly: true,
-                          ),
-                          _field(
-                            emailController,
-                            'Email Address',
-                            Icons.email_rounded,
-                            readOnly: true,
-                            type: TextInputType.emailAddress,
-                          ),
-                          _field(
-                            phoneController,
-                            'Phone Number',
-                            Icons.phone_rounded,
-                            readOnly: true,
-                            type: TextInputType.phone,
-                          ),
-                          _field(
-                            companyController,
-                            'Company Name',
-                            Icons.business_rounded,
-                            readOnly: true,
-                          ),
-                          _field(
-                            gstinController,
-                            'GSTIN',
-                            Icons.receipt_long_rounded,
-                            readOnly: true,
-                          ),
-
-                          // REMOVE THIS FIELD FROM UI
-                          // _field(
-                          //   opportunityIdController,
-                          //   'Opportunity ID',
-                          //   Icons.tag_rounded,
-                          //   readOnly: true,
-                          // ),
-                        ]
-                        : [],
+          // ── Personal Information ──────────────────────────────────
+          // ── Personal Information ──────────────────────────────────
+          _sectionCard(
+            title: 'Personal Information',
+            icon: Icons.person_outline_rounded,
+            trailing: IconButton(
+              icon: Icon(
+                isPersonalInfoExpanded
+                    ? Icons.keyboard_arrow_up_rounded
+                    : Icons.keyboard_arrow_down_rounded,
               ),
+              onPressed: () {
+                setState(() {
+                  isPersonalInfoExpanded = !isPersonalInfoExpanded;
+                });
+              },
+            ),
+            children:
+                isPersonalInfoExpanded
+                    ? [
+                      _field(
+                        nameController,
+                        'Full Name',
+                        Icons.person_rounded,
+                        readOnly: true,
+                      ),
+                      _field(
+                        emailController,
+                        'Email Address',
+                        Icons.email_rounded,
+                        readOnly: true,
+                        type: TextInputType.emailAddress,
+                      ),
+                      _field(
+                        phoneController,
+                        'Phone Number',
+                        Icons.phone_rounded,
+                        readOnly: true,
+                        type: TextInputType.phone,
+                      ),
+                      _field(
+                        companyController,
+                        'Company Name',
+                        Icons.business_rounded,
+                        readOnly: true,
+                      ),
+                      _field(
+                        gstinController,
+                        'GSTIN',
+                        Icons.receipt_long_rounded,
+                        readOnly: true,
+                      ),
 
-              const SizedBox(height: 8),
+                      // REMOVE THIS FIELD FROM UI
+                      // _field(
+                      //   opportunityIdController,
+                      //   'Opportunity ID',
+                      //   Icons.tag_rounded,
+                      //   readOnly: true,
+                      // ),
+                    ]
+                    : [],
+          ),
 
-              // ── Shipping Details ──────────────────────────────────────
-              _sectionCard(
-                title: 'Shipping Details',
-                icon: Icons.local_shipping_outlined,
+          const SizedBox(height: 8),
+
+          // ── Shipping Details ──────────────────────────────────────
+          _sectionCard(
+            title: 'Shipping Details',
+            icon: Icons.local_shipping_outlined,
+            children: [
+              Row(
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _fancyDropdown(
-                          label: 'Load Type',
-                          icon: Icons.layers_rounded,
-                          value:
-                              _loadTypes.contains(selectedLoadType)
-                                  ? selectedLoadType
-                                  : null,
-                          items: _loadTypes,
-                          isRequired: true,
-                          readOnly: true,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _field(
-                          shipmentModeController,
-                          'Shipment Mode',
-                          Icons.directions_boat_rounded,
-                          readOnly: true,
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _field(
-                          polController,
-                          'POL',
-                          Icons.anchor_rounded,
-                          readOnly: true,
-                        ),
-                      ),
-
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _field(
-                          podController,
-                          'POD',
-                          Icons.anchor_rounded,
-                          readOnly: true,
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _field(
-                          validFromController,
-                          'Valid From (YYYY-MM-DD)',
-                          Icons.calendar_today_rounded,
-                          readOnly: true,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _field(
-                          validTillController,
-                          'Valid Till (YYYY-MM-DD)',
-                          Icons.event_rounded,
-                          readOnly: true,
-                          hintText: '—',
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (_showAddressFields) ...[
-                    _field(
-                      pickUpAddressController,
-                      'Pickup Address',
-                      Icons.location_city_rounded,
+                  Expanded(
+                    child: _fancyDropdown(
+                      label: 'Load Type',
+                      icon: Icons.layers_rounded,
+                      value:
+                          _loadTypes.contains(selectedLoadType)
+                              ? selectedLoadType
+                              : null,
+                      items: _loadTypes,
+                      isRequired: true,
                       readOnly: true,
-                      maxLines: 2,
                     ),
-                    _field(
-                      deliveryAddressController,
-                      'Delivery Address',
-                      Icons.local_shipping_rounded,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _field(
+                      shipmentModeController,
+                      'Shipment Mode',
+                      Icons.directions_boat_rounded,
                       readOnly: true,
-                      maxLines: 2,
                     ),
-                  ],
-                ],
-              ),
-
-              const SizedBox(height: 8),
-
-              // ── Container Details ─────────────────────────────────────
-              _sectionCard(
-                title: 'Container Details',
-                icon: Icons.inventory_2_outlined,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _fancyDropdown(
-                          label: 'Container Type',
-                          icon: Icons.view_in_ar_rounded,
-                          value: selectedContainerType,
-                          items: containerTypes,
-                          isRequired: true,
-                          readOnly: true,
-                          validator: (v) => v == null ? 'Select type' : null,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _fancyDropdown(
-                          label: 'Container Size',
-                          icon: Icons.straighten_rounded,
-                          value:
-                              _currentSizes.contains(selectedContainerSize)
-                                  ? selectedContainerSize
-                                  : null,
-                          items: _currentSizes,
-                          readOnly: true,
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _field(
-                          numberOfContainersController,
-                          'No. of Containers',
-                          Icons.numbers_rounded,
-                          type: TextInputType.number,
-                          readOnly: true,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _field(
-                          goodsValueController,
-                          'Goods Value (USD)',
-                          Icons.attach_money_rounded,
-                          type: TextInputType.number,
-                          readOnly: true,
-                          hintText: '—',
-                        ),
-                      ),
-                    ],
-                  ),
-
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _field(
-                          weightPerContainerController,
-                          'Net Weight / Container (KGS)',
-                          Icons.monitor_weight_rounded,
-                          type: TextInputType.number,
-                          readOnly: true,
-                          hintText: '—',
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: _field(
-                          grossWeightController,
-                          'Gross Weight (KGS)',
-                          Icons.scale_rounded,
-                          type: TextInputType.number,
-                          readOnly: true,
-                          hintText: '—',
-                        ),
-                      ),
-                    ],
                   ),
                 ],
               ),
 
-              const SizedBox(height: 8),
-
-              // ── Additional Information ────────────────────────────────
-              _sectionCard(
-                title: 'Additional Information',
-                icon: Icons.info_outline_rounded,
+              Row(
                 children: [
-                  Text(
-                    'Commodity Description',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.grey.shade700,
+                  Expanded(
+                    child: _field(
+                      polController,
+                      'POL',
+                      Icons.anchor_rounded,
+                      readOnly: true,
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  TextFormField(
-                    controller: additionalInfoController,
-                    readOnly: true,
-                    maxLines: 3,
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
+
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _field(
+                      podController,
+                      'POD',
+                      Icons.anchor_rounded,
+                      readOnly: true,
+                    ),
+                  ),
+                ],
+              ),
+
+              Row(
+                children: [
+                  Expanded(
+                    child: _field(
+                      validFromController,
+                      'Valid From (YYYY-MM-DD)',
+                      Icons.calendar_today_rounded,
+                      readOnly: true,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _field(
+                      validTillController,
+                      'Valid Till (YYYY-MM-DD)',
+                      Icons.event_rounded,
+                      readOnly: true,
                       hintText: '—',
-                      hintStyle: TextStyle(
-                        color: Colors.grey.shade400,
-                        fontSize: 13,
-                      ),
-                      filled: true,
-                      fillColor: const Color(0xFFF3F4F6),
-                      contentPadding: const EdgeInsets.all(10),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(
-                          color: Colors.grey.shade200,
-                          width: 1.5,
-                        ),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(
-                          color: Colors.grey.shade200,
-                          width: 1.5,
-                        ),
-                      ),
                     ),
                   ),
                 ],
               ),
-
-              const SizedBox(height: 10),
-
-              // ── Terms ─────────────────────────────────────────────────
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
+              if (_showAddressFields) ...[
+                _field(
+                  pickUpAddressController,
+                  'Pickup Address',
+                  Icons.location_city_rounded,
+                  readOnly: true,
+                  maxLines: 2,
                 ),
-                decoration: BoxDecoration(
-                  color:
-                      acceptedTerms
-                          ? AppColors.main.withOpacity(0.06)
-                          : Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color:
-                        acceptedTerms ? AppColors.main : Colors.grey.shade300,
-                    width: 1.5,
+                _field(
+                  deliveryAddressController,
+                  'Delivery Address',
+                  Icons.local_shipping_rounded,
+                  readOnly: true,
+                  maxLines: 2,
+                ),
+              ],
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // ── Container Details ─────────────────────────────────────
+          _sectionCard(
+            title: 'Container Details',
+            icon: Icons.inventory_2_outlined,
+            children: [
+              _fancyDropdown(
+                label: 'Container Type',
+                icon: Icons.view_in_ar_rounded,
+                value: selectedContainerType,
+                items: containerTypes,
+                isRequired: true,
+                readOnly: true,
+                validator: (v) => v == null ? 'Select type' : null,
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: _fancyDropdown(
+                      label: 'Container Size',
+                      icon: Icons.straighten_rounded,
+                      value:
+                          _currentSizes.contains(selectedContainerSize)
+                              ? selectedContainerSize
+                              : null,
+                      items: _currentSizes,
+                      readOnly: true,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _field(
+                      numberOfContainersController,
+                      'No. of Containers',
+                      Icons.numbers_rounded,
+                      type: TextInputType.number,
+                      readOnly: true,
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: _field(
+                      goodsValueController,
+                      'Goods Value (USD)',
+                      Icons.attach_money_rounded,
+                      type: TextInputType.number,
+                      readOnly: true,
+                      hintText: '—',
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _field(
+                      weightPerContainerController,
+                      'Net Weight / Container (KGS)',
+                      Icons.monitor_weight_rounded,
+                      type: TextInputType.number,
+                      readOnly: true,
+                      hintText: '—',
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // ── Additional Information ────────────────────────────────
+          _sectionCard(
+            title: 'Additional Information',
+            icon: Icons.info_outline_rounded,
+            children: [
+              Text(
+                'Commodity Description',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextFormField(
+                controller: additionalInfoController,
+                readOnly: true,
+                maxLines: 3,
+                style: const TextStyle(fontSize: 14),
+                decoration: InputDecoration(
+                  hintText: '—',
+                  hintStyle: TextStyle(
+                    color: Colors.grey.shade400,
+                    fontSize: 13,
+                  ),
+                  filled: true,
+                  fillColor: const Color(0xFFF3F4F6),
+                  contentPadding: const EdgeInsets.all(10),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: Colors.grey.shade200,
+                      width: 1.5,
+                    ),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: Colors.grey.shade200,
+                      width: 1.5,
+                    ),
                   ),
                 ),
-                child: Row(
-                  children: [
-                    Transform.scale(
-                      scale: 1.1,
-                      child: Checkbox(
-                        value: acceptedTerms,
-                        onChanged:
-                            (v) => setState(() => acceptedTerms = v ?? false),
-                        activeColor: AppColors.main,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 10),
+
+          // ── Terms ─────────────────────────────────────────────────
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color:
+                  acceptedTerms
+                      ? AppColors.main.withOpacity(0.06)
+                      : Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: acceptedTerms ? AppColors.main : Colors.grey.shade300,
+                width: 1.5,
+              ),
+            ),
+            child: Row(
+              children: [
+                Transform.scale(
+                  scale: 1.1,
+                  child: Checkbox(
+                    value: acceptedTerms,
+                    onChanged:
+                        (v) => setState(() => acceptedTerms = v ?? false),
+                    activeColor: AppColors.main,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(4),
                     ),
-                    Expanded(child: _buildTermsAcceptanceLabel()),
-                  ],
+                  ),
                 ),
-              ),
+                Expanded(child: _buildTermsAcceptanceLabel()),
+              ],
+            ),
+          ),
 
-              const SizedBox(height: 6),
+          const SizedBox(height: 6),
 
-              _SwipeDownloadQuote(
-                enabled: acceptedTerms,
-                busy: _isSubmitting,
-                onConfirmed: _onSwipeDownload,
-              ),
+          _SwipeDownloadQuote(
+            enabled: acceptedTerms,
+            busy: _isSubmitting,
+            onConfirmed: _onSwipeDownload,
+          ),
 
-              const SizedBox(height: 8),
+          const SizedBox(height: 8),
         ],
       ),
     );

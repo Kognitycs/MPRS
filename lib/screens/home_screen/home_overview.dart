@@ -104,11 +104,12 @@ class HomeOverview extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 if (!firstLoad &&
+                    _homeAccountId().isNotEmpty &&
                     (stats.usingSampleShipments || stats.usingSampleQuotes))
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
                     child: Text(
-                      'Sample figures shown because live data could not be loaded.',
+                      'Some figures could not be loaded — showing 0.',
                       style: AppTextStyles.montserratRegular.copyWith(
                         fontSize: 11,
                         color: const Color(0xFF98A2B3),
@@ -240,10 +241,6 @@ class HomeTodayStats {
         quoteRows.isEmpty;
     final useSampleShipments = shipmentsFailed && orders.isEmpty;
 
-    if (useSampleShipments && useSampleQuotes) {
-      return _sample();
-    }
-
     final booked = orders.length;
     final bookedToday = ordersBookedToday(bookings).length;
     final accepted =
@@ -256,29 +253,15 @@ class HomeTodayStats {
             .length;
 
     return HomeTodayStats(
-      bookedValue: useSampleShipments ? '12' : '$booked',
-      acceptedValue: useSampleQuotes ? '4' : '$accepted',
-      todayValue: useSampleShipments ? '2' : '$bookedToday',
-      draftValue: useSampleQuotes ? '3' : '$draft',
-      bookedCount: useSampleShipments ? 12 : booked,
-      acceptedCount: useSampleQuotes ? 4 : accepted,
-      draftCount: useSampleQuotes ? 3 : draft,
+      bookedValue: '$booked',
+      acceptedValue: '$accepted',
+      todayValue: '$bookedToday',
+      draftValue: '$draft',
+      bookedCount: booked,
+      acceptedCount: accepted,
+      draftCount: draft,
       usingSampleShipments: useSampleShipments,
       usingSampleQuotes: useSampleQuotes,
-    );
-  }
-
-  static HomeTodayStats _sample() {
-    return const HomeTodayStats(
-      bookedValue: '12',
-      acceptedValue: '4',
-      todayValue: '2',
-      draftValue: '3',
-      bookedCount: 12,
-      acceptedCount: 4,
-      draftCount: 3,
-      usingSampleShipments: true,
-      usingSampleQuotes: true,
     );
   }
 
@@ -687,7 +670,7 @@ class _QuickActions extends StatelessWidget {
     final actions = [
       _Action(
         icon: Icons.local_shipping_outlined,
-        label: 'Bookings',
+        label: 'Quotes',
         color: const Color(0xFF7C3AED),
         background: const Color(0xFFF3E8FF),
         onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 1),
@@ -813,26 +796,28 @@ class _WorkspaceRow extends StatelessWidget {
                 MaterialPageRoute<void>(builder: (_) => PendingApprovals()),
               ),
         ),
-      _Action(
-        icon: Icons.notifications_active_outlined,
-        label: 'Push',
-        color: const Color(0xFF7C3AED),
-        background: const Color(0xFFF3E8FF),
-        onTap:
-            () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute<void>(builder: (_) => const PushNotifi())),
-      ),
-      _Action(
-        icon: Icons.local_offer_outlined,
-        label: 'Banners',
-        color: const Color(0xFF0891B2),
-        background: const Color(0xFFE0F7FA),
-        onTap:
-            () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const BannerScreen()),
-            ),
-      ),
+      if (isAdmin)
+        _Action(
+          icon: Icons.notifications_active_outlined,
+          label: 'Push',
+          color: const Color(0xFF7C3AED),
+          background: const Color(0xFFF3E8FF),
+          onTap:
+              () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const PushNotifi()),
+              ),
+        ),
+      if (isAdmin)
+        _Action(
+          icon: Icons.local_offer_outlined,
+          label: 'Banners',
+          color: const Color(0xFF0891B2),
+          background: const Color(0xFFE0F7FA),
+          onTap:
+              () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const BannerScreen()),
+              ),
+        ),
       _Action(
         icon: Icons.inventory_outlined,
         label: 'Open\nquotes',

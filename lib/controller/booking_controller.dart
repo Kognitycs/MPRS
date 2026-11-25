@@ -14,9 +14,88 @@ import '../model/get_booking_list_model_new.dart';
 import '../model/get_shipment_model.dart' as shipment;
 import '../model/order_document_model.dart';
 import '../model/saved_quotations_model.dart';
+import 'package:mprs_android/service/sales_account_directory.dart';
 import 'saved_quotations_controller.dart';
 
 class BookingController extends GetxController {
+  static const String homeBookingsTag = 'all_bookings';
+
+  static String controllerTagFor({required bool bookMode}) {
+    if (AuthDataHelper.isInternalUser()) return homeBookingsTag;
+    if (bookMode) return 'book_tab';
+    return 'shipments_tab';
+  }
+
+  static BookingController resolveFor({required bool bookMode}) {
+    final tag = controllerTagFor(bookMode: bookMode);
+    if (Get.isRegistered<BookingController>(tag: tag)) {
+      return Get.find<BookingController>(tag: tag);
+    }
+    return Get.put(BookingController(), tag: tag);
+  }
+
+  static String bookingListStatus(Records record) {
+    for (final raw in [record.trackingStatusC, record.customStatusC]) {
+      final normalized = SavedQuotationsModel.normalizeQuoteListStatus(
+        raw?.toString(),
+      );
+      if (normalized.isNotEmpty) return normalized;
+    }
+    return '';
+  }
+
+  static bool isBookedOrderRow(Records record) {
+    final status = bookingListStatus(record);
+    if (SavedQuotationsModel.isDraftStatus(status)) return false;
+    if (SavedQuotationsModel.isPendingStatus(status)) return false;
+
+    final tracking =
+        (record.trackingStatusC ?? '').toString().trim().toLowerCase();
+    if (tracking == 'reserved' || tracking.contains('draft')) return false;
+
+    final id = record.id?.toString().trim() ?? '';
+    final quoteId = record.quoteId?.toString().trim() ?? '';
+    final orderNo =
+        (record.orderNumber ?? record.orderReferenceNumber ?? '')
+            .toString()
+            .trim();
+
+    if (SavedQuotationsModel.isAcceptedStatus(status) &&
+        orderNo.isEmpty &&
+        !id.startsWith('801')) {
+      return false;
+    }
+
+    if (orderNo.isNotEmpty) return true;
+    if (id.startsWith('801')) return true;
+    if (id.startsWith('0Q0')) return false;
+    if (quoteId.isNotEmpty && quoteId == id) return false;
+
+    final booked = record.bookedDateC?.toString().trim() ?? '';
+    return booked.isNotEmpty;
+  }
+
+  static List<Records> bookedOrderRows(Iterable<Records> source) {
+    final seen = <String>{};
+    final rows = <Records>[];
+    for (final record in source) {
+      if (!isBookedOrderRow(record)) continue;
+      final id = record.id?.toString().trim() ?? '';
+      final key =
+          id.isNotEmpty
+              ? id
+              : '${record.orderNumber ?? ''}|${record.quoteId ?? ''}';
+      if (!seen.add(key)) continue;
+      rows.add(record);
+    }
+    return rows;
+  }
+
+  void _retainBookedOrdersOnly() {
+    allBookings = Records.sortNewestFirst(bookedOrderRows(allBookings));
+    filteredBookings = List<Records>.from(allBookings);
+  }
+
   /// Booked / confirmed shipments tab.
   RxBool isBookedLoading = false.obs;
 
@@ -188,11 +267,15 @@ class BookingController extends GetxController {
           ..clear()
           ..addAll(list);
         await _appendReservedQuotes();
-        allBookings = Records.sortNewestFirst(allBookings);
-        filteredBookings = Records.sortNewestFirst(filteredBookings);
+        _retainBookedOrdersOnly();
         confirmedLoadFailed = false;
         _mergeTodayWithLoaded();
         update();
+        return;
+      }
+
+      if (AuthDataHelper.isInternalUser()) {
+        await _loadConfirmedBookingsForInternalPortfolio();
         return;
       }
 
@@ -205,40 +288,7 @@ class BookingController extends GetxController {
         return;
       }
 
-      final apiRequest = ApiRequest(
-        url: ApiConstants.userBookingsList(accountId),
-        method: DioMethod.get,
-      );
-
-      final response = await BaseClient().handleRequest(apiRequest);
-
-      debugPrint('BOOKING RESPONSE : $response');
-
-      if (response != null && response['status'] == 200) {
-        filteredBookings.clear();
-        allBookings.clear();
-
-        for (var item in response['bookings']) {
-          final booking = Records.fromJson(item);
-          filteredBookings.add(booking);
-          allBookings.add(booking);
-        }
-        await _fillBookedCargoFromQuotes(allBookings);
-        await _appendReservedQuotes();
-        allBookings = Records.sortNewestFirst(allBookings);
-        filteredBookings = Records.sortNewestFirst(filteredBookings);
-
-        // New status alerts only (not when opening Notifications / login).
-        await ShipmentStatusNotificationService.processBookingRecords(
-          allBookings,
-        );
-        confirmedLoadFailed = false;
-        _mergeTodayWithLoaded();
-        update();
-      } else {
-        await _appendReservedQuotes();
-        confirmedLoadFailed = allBookings.isEmpty;
-      }
+      await _loadConfirmedBookingsForAccount(accountId);
     } catch (e) {
       debugPrint('ERROR : $e');
       try {
@@ -253,14 +303,123 @@ class BookingController extends GetxController {
     }
   }
 
+  Future<List<Records>> _fetchPortfolioAccountBookedRows(String accountId) async {
+    try {
+      final response = await BaseClient().handleRequest(
+        ApiRequest(
+          url: ApiConstants.userBookingsList(accountId),
+          method: DioMethod.get,
+        ),
+      );
+      if (response == null || response['status'] != 200) return [];
+      final rows = response['bookings'];
+      if (rows is! List) return [];
+      final parsed = <Records>[];
+      for (final item in rows) {
+        if (item is! Map) continue;
+        parsed.add(Records.fromJson(Map<String, dynamic>.from(item)));
+      }
+      return parsed;
+    } catch (e) {
+      debugPrint('⚠️ Bookings for account $accountId failed: $e');
+      return [];
+    }
+  }
+
+  Future<void> _loadConfirmedBookingsForInternalPortfolio() async {
+    final portfolioIds = await SalesAccountDirectory.portfolioAccountIdSet();
+    if (portfolioIds.isEmpty) {
+      debugPrint('⚠️ Internal bookings: OwnerId portfolio is empty');
+      confirmedLoadFailed = true;
+      return;
+    }
+
+    filteredBookings.clear();
+    allBookings.clear();
+    final seenOrderIds = <String>{};
+
+    final chunks = await Future.wait(
+      portfolioIds.map(_fetchPortfolioAccountBookedRows),
+    );
+    for (final rows in chunks) {
+      for (final booking in rows) {
+        if (!isBookedOrderRow(booking)) continue;
+        final orderId = booking.id?.toString().trim() ?? '';
+        if (orderId.isNotEmpty && !seenOrderIds.add(orderId)) continue;
+        filteredBookings.add(booking);
+        allBookings.add(booking);
+      }
+    }
+
+    if (allBookings.isEmpty) {
+      await _appendReservedQuotes();
+      confirmedLoadFailed = true;
+      update();
+      return;
+    }
+
+    await _fillBookedCargoFromQuotes(allBookings);
+    await _appendReservedQuotes();
+    _retainBookedOrdersOnly();
+    await ShipmentStatusNotificationService.processBookingRecords(allBookings);
+    confirmedLoadFailed = false;
+    _mergeTodayWithLoaded();
+    debugPrint(
+      '✅ Internal booked orders (portfolio=${portfolioIds.length}): '
+      '${allBookings.length}',
+    );
+    update();
+  }
+
+  Future<void> _loadConfirmedBookingsForAccount(String accountId) async {
+    final apiRequest = ApiRequest(
+      url: ApiConstants.userBookingsList(accountId),
+      method: DioMethod.get,
+    );
+
+    final response = await BaseClient().handleRequest(apiRequest);
+
+    debugPrint('BOOKING RESPONSE : $response');
+
+    if (response != null && response['status'] == 200) {
+      filteredBookings.clear();
+      allBookings.clear();
+
+      for (var item in response['bookings']) {
+        final booking = Records.fromJson(item);
+        if (!isBookedOrderRow(booking)) continue;
+        filteredBookings.add(booking);
+        allBookings.add(booking);
+      }
+      await _fillBookedCargoFromQuotes(allBookings);
+      await _appendReservedQuotes();
+      _retainBookedOrdersOnly();
+
+      await ShipmentStatusNotificationService.processBookingRecords(
+        allBookings,
+      );
+      confirmedLoadFailed = false;
+      _mergeTodayWithLoaded();
+      update();
+    } else {
+      await _appendReservedQuotes();
+      confirmedLoadFailed = allBookings.isEmpty;
+    }
+  }
+
   /// Loads orders created today. External and internal users are limited to
   /// their account. Admin sees every account.
   Future<void> loadTodayBookings() async {
     try {
       final isAdmin = AuthDataHelper.isAdminUser();
+      final isInternal = AuthDataHelper.isInternalUser();
       final fromDb = DbHelper().getUserModel()?.accountId?.trim() ?? '';
       final accountId =
           fromDb.isNotEmpty ? fromDb : AuthDataHelper.getAccountId().trim();
+      final portfolioIds =
+          isInternal
+              ? await SalesAccountDirectory.portfolioAccountIdSet()
+              : null;
       final response = await BaseClient().handleRequest(
         ApiRequest(
           url: ApiConstants.ordersCreatedToday(
@@ -279,7 +438,15 @@ class BookingController extends GetxController {
         if (item is! Map) continue;
         final map = Map<String, dynamic>.from(item);
         final onRow = map['AccountId']?.toString().trim() ?? '';
-        if (!isAdmin &&
+        if (isInternal && portfolioIds != null) {
+          if (onRow.isNotEmpty &&
+              !SalesAccountDirectory.rowAccountInPortfolio(
+                onRow,
+                portfolioIds,
+              )) {
+            continue;
+          }
+        } else if (!isAdmin &&
             accountId.isNotEmpty &&
             onRow.isNotEmpty &&
             onRow != accountId) {
@@ -387,6 +554,7 @@ class BookingController extends GetxController {
 
     filteredBookings = Records.sortNewestFirst(
       allBookings.where((booking) {
+        if (!isBookedOrderRow(booking)) return false;
         // Searching by Order Number or Port
         final orderNo = (booking.orderNumber ?? "").toString().toLowerCase();
         final pol = (booking.portOfLoadingC ?? "").toString().toLowerCase();

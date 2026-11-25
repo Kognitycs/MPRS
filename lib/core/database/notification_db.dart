@@ -239,6 +239,12 @@ class NotificationDB {
     return rows.isNotEmpty;
   }
 
+  /// Prevent the next account on this device from seeing a previous user's inbox.
+  Future<void> clearInboxOnLogout() async {
+    final db = await database;
+    await db.delete('notifications');
+  }
+
   /// Step keys already in inbox for this order (`shipment_{orderId}_{step}`).
   Future<Set<String>> getShipmentStepKeysForOrder(String orderId) async {
     if (orderId.isEmpty) return {};

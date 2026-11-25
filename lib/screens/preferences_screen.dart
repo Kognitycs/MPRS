@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/core/constants/app_colors.dart';
 import 'package:mprs_android/service/most_used_ports_service.dart';
 import 'package:mprs_android/widget/common_appbar.dart';
@@ -23,10 +24,16 @@ class _PreferencesScreenState extends State<PreferencesScreen> {
   int _polUseCount = 0;
   int _podUseCount = 0;
 
+  bool get _showSavedPortPreferences => !AuthDataHelper.isInternalUser();
+
   @override
   void initState() {
     super.initState();
-    _loadMostUsedPorts();
+    if (_showSavedPortPreferences) {
+      _loadMostUsedPorts();
+    } else {
+      _loadingPorts = false;
+    }
   }
 
   @override
@@ -75,7 +82,11 @@ class _PreferencesScreenState extends State<PreferencesScreen> {
       backgroundColor: AppColors.background,
       appBar: CommonAppBar(title: "Preferences", onActionPressed: () {}),
       body: RefreshIndicator(
-        onRefresh: () => _loadMostUsedPorts(refresh: true),
+        onRefresh: () async {
+          if (_showSavedPortPreferences) {
+            await _loadMostUsedPorts(refresh: true);
+          }
+        },
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
@@ -89,44 +100,46 @@ class _PreferencesScreenState extends State<PreferencesScreen> {
                 emailNotification,
                 (v) => setState(() => emailNotification = v),
               ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(child: sectionTitle("Saved Preferences")),
-                  if (_loadingPorts)
-                    const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  else
-                    TextButton(
-                      onPressed: () => _loadMostUsedPorts(refresh: true),
-                      child: const Text('Refresh'),
-                    ),
-                ],
-              ),
-              if (_portsError != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  _portsError!,
-                  style: TextStyle(fontSize: 12, color: AppColors.grey),
+              if (_showSavedPortPreferences) ...[
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(child: sectionTitle("Saved Preferences")),
+                    if (_loadingPorts)
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    else
+                      TextButton(
+                        onPressed: () => _loadMostUsedPorts(refresh: true),
+                        child: const Text('Refresh'),
+                      ),
+                  ],
                 ),
+                if (_portsError != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    _portsError!,
+                    style: TextStyle(fontSize: 12, color: AppColors.grey),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                RoundedInputField(
+                  label: "Preferred port of Loading",
+                  controller: _polController,
+                  hint: _usageHint(_polUseCount, 'origin port'),
+                  editable: false,
+                ),
+                RoundedInputField(
+                  label: "Preferred port of Discharge",
+                  controller: _podController,
+                  hint: _usageHint(_podUseCount, 'destination port'),
+                  editable: false,
+                ),
+                const SizedBox(height: 20),
               ],
-              const SizedBox(height: 8),
-              RoundedInputField(
-                label: "Preferred port of Loading",
-                controller: _polController,
-                hint: _usageHint(_polUseCount, 'origin port'),
-                editable: false,
-              ),
-              RoundedInputField(
-                label: "Preferred port of Discharge",
-                controller: _podController,
-                hint: _usageHint(_podUseCount, 'destination port'),
-                editable: false,
-              ),
-              const SizedBox(height: 20),
             ],
           ),
         ),

@@ -1,35 +1,17 @@
-import 'dart:convert';
-
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
-import 'package:mprs_android/core/auth_data_helper.dart';
-import 'package:mprs_android/core/constants/api_constants.dart';
 import 'package:mprs_android/core/constants/app_colors.dart';
 import 'package:mprs_android/core/constants/app_text_styles.dart';
-import 'package:mprs_android/model/admin_user_count_model.dart';
 import 'package:mprs_android/screens/home_screen/home_actions.dart';
 import 'package:mprs_android/screens/marquee_webview.dart';
 import 'package:mprs_android/screens/report_analysis/analytics_report_screen.dart';
-import 'package:mprs_android/service/http_client_helper.dart';
+import 'package:mprs_android/service/internal_home_stats_service.dart';
+import 'package:mprs_android/service/sales_account_directory.dart';
+import 'package:mprs_android/screens/user/add_user_screen.dart';
 import 'package:mprs_android/widget/common_appbar.dart';
 
 const _cardBorder = AppColors.cardBorder;
 const _footBlue = Color(0xFF3B82F6);
-
-/// Placeholder book of business until a sales-person API exists.
-const _sampleAccounts = <String>[
-  'Apex Traders',
-  'Blue Harbor Logistics',
-  'Crescent Exports',
-  'Delta Freight',
-  'Eastern Mills',
-  'Falcon Cargo',
-];
-
-const _sampleAccountCount = 18;
-const _sampleOrderCount = 42;
-const _sampleOpenQuotes = 11;
-const _sampleAcceptedQuotes = 7;
 
 /// Home for an internal sales user.
 class InternalDashboard extends StatefulWidget {
@@ -42,34 +24,34 @@ class InternalDashboard extends StatefulWidget {
 }
 
 class _InternalDashboardState extends State<InternalDashboard> {
-  bool _usersLoading = true;
-  bool _usersAreSample = false;
-  int _normalUsers = 0;
-  int _vipUsers = 0;
-  int _vvipUsers = 0;
+  bool _statsLoading = true;
+  InternalHomeStats _stats = InternalHomeStats.empty;
 
   @override
   void initState() {
     super.initState();
-    _loadUsers();
+    _loadAll();
   }
 
   @override
   void didUpdateWidget(covariant InternalDashboard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.refreshNonce != widget.refreshNonce) _loadUsers();
+    if (oldWidget.refreshNonce != widget.refreshNonce) _loadAll();
   }
 
-  Future<void> _loadUsers() async {
-    setState(() => _usersLoading = true);
-    final counts = await _fetchUserTypeCounts();
+  Future<void> _loadAll() async {
+    await _loadBusinessStats(refreshBookings: true);
+  }
+
+  Future<void> _loadBusinessStats({required bool refreshBookings}) async {
+    setState(() => _statsLoading = true);
+    final stats = await InternalHomeStatsService.load(
+      refreshBookings: refreshBookings,
+    );
     if (!mounted) return;
     setState(() {
-      _normalUsers = counts.normal;
-      _vipUsers = counts.vip;
-      _vvipUsers = counts.vvip;
-      _usersAreSample = counts.sample;
-      _usersLoading = false;
+      _stats = stats;
+      _statsLoading = false;
     });
   }
 
@@ -88,11 +70,7 @@ class _InternalDashboardState extends State<InternalDashboard> {
           ),
         ),
         const SizedBox(height: 8),
-        const _SampleNote(
-          'Sample figures. No API yet for accounts tagged to this sales person.',
-        ),
-        const SizedBox(height: 8),
-        const _StatsGrid(),
+        _StatsGrid(stats: _stats, loading: _statsLoading),
         const SizedBox(height: 22),
         const Text(
           'Quick actions',
@@ -116,20 +94,13 @@ class _InternalDashboardState extends State<InternalDashboard> {
           ),
         ),
         const SizedBox(height: 8),
-        if (_usersAreSample && !_usersLoading)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 8),
-            child: _SampleNote(
-              'Sample user counts. The app user-count API did not return data.',
-            ),
-          ),
-        if (_usersLoading)
+        if (_statsLoading)
           const _ChartSkeleton()
         else
           _UserTypeChart(
-            normal: _normalUsers,
-            vip: _vipUsers,
-            vvip: _vvipUsers,
+            normal: _stats.customerTiers.normal,
+            vip: _stats.customerTiers.vip,
+            vvip: _stats.customerTiers.vvip,
           ),
         const SizedBox(height: 22),
         const Text(
@@ -160,75 +131,10 @@ class _InternalDashboardState extends State<InternalDashboard> {
   }
 }
 
-class _UserTypeCounts {
-  final int normal;
-  final int vip;
-  final int vvip;
-  final bool sample;
-
-  const _UserTypeCounts({
-    required this.normal,
-    required this.vip,
-    required this.vvip,
-    required this.sample,
-  });
-}
-
-/// Normal customers are stored as userType External in the app database.
-Future<_UserTypeCounts> _fetchUserTypeCounts() async {
-  final results = await Future.wait([
-    _countUsers('External'),
-    _countUsers('VIP'),
-    _countUsers('VVIP'),
-  ]);
-  if (results.any((count) => count == null)) {
-    return const _UserTypeCounts(normal: 24, vip: 9, vvip: 3, sample: true);
-  }
-  return _UserTypeCounts(
-    normal: results[0]!,
-    vip: results[1]!,
-    vvip: results[2]!,
-    sample: false,
-  );
-}
-
-Future<int?> _countUsers(String userType) async {
-  final token = AuthDataHelper.getToken();
-  try {
-    final response = await HttpClientHelper.getWithBearer(
-      ApiConstants.adminUserCount(userType: userType),
-      token,
-    );
-    if (response.statusCode == 200) {
-      final decoded = jsonDecode(response.data);
-      return AdminUserCountResponse.fromJson(
-        decoded,
-        userType: userType,
-      ).count;
-    }
-  } catch (e) {
-    debugPrint('user/count $userType failed: $e');
-  }
-
-  try {
-    final fallback =
-        '${ApiConstants.allUsers}?page=1&limit=1&userType=${Uri.encodeQueryComponent(userType)}';
-    final response = await HttpClientHelper.getWithBearer(fallback, token);
-    if (response.statusCode != 200) return null;
-    final decoded = jsonDecode(response.data);
-    if (decoded is Map && decoded['totalRecords'] is num) {
-      return (decoded['totalRecords'] as num).toInt();
-    }
-  } catch (e) {
-    debugPrint('all-users count $userType failed: $e');
-  }
-  return null;
-}
-
-class _SampleNote extends StatelessWidget {
+class _DataNote extends StatelessWidget {
   final String text;
 
-  const _SampleNote(this.text);
+  const _DataNote(this.text);
 
   @override
   Widget build(BuildContext context) {
@@ -243,7 +149,10 @@ class _SampleNote extends StatelessWidget {
 }
 
 class _StatsGrid extends StatelessWidget {
-  const _StatsGrid();
+  final InternalHomeStats stats;
+  final bool loading;
+
+  const _StatsGrid({required this.stats, this.loading = false});
 
   @override
   Widget build(BuildContext context) {
@@ -255,13 +164,16 @@ class _StatsGrid extends StatelessWidget {
             Expanded(
               child: _StatCard(
                 icon: Icons.apartment_outlined,
-                value: '$_sampleAccountCount',
+                value: '${stats.accountCount}',
                 label: 'Accounts',
                 foot: 'Assigned',
+                loading: loading,
                 onTap: () {
                   Navigator.of(context).push(
                     MaterialPageRoute<void>(
-                      builder: (_) => const _SampleAccountsScreen(),
+                      builder:
+                          (_) =>
+                              _AssignedAccountsScreen(accounts: stats.accounts),
                     ),
                   );
                 },
@@ -271,9 +183,10 @@ class _StatsGrid extends StatelessWidget {
             Expanded(
               child: _StatCard(
                 icon: Icons.local_shipping_outlined,
-                value: '$_sampleOrderCount',
+                value: '${stats.orderCount}',
                 label: 'Orders',
                 foot: 'Active',
+                loading: loading,
                 onTap: () => HomeActions.openTrack(shipmentsTab: 0),
               ),
             ),
@@ -286,9 +199,10 @@ class _StatsGrid extends StatelessWidget {
             Expanded(
               child: _StatCard(
                 icon: Icons.request_quote_outlined,
-                value: '$_sampleOpenQuotes',
+                value: '${stats.openQuoteCount}',
                 label: 'Open quotes',
                 foot: 'Quotes',
+                loading: loading,
                 onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 0),
               ),
             ),
@@ -296,9 +210,10 @@ class _StatsGrid extends StatelessWidget {
             Expanded(
               child: _StatCard(
                 icon: Icons.task_alt_outlined,
-                value: '$_sampleAcceptedQuotes',
+                value: '${stats.acceptedQuoteCount}',
                 label: 'Accepted quotes',
                 foot: 'Quotes',
+                loading: loading,
                 onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 2),
               ),
             ),
@@ -314,6 +229,7 @@ class _StatCard extends StatelessWidget {
   final String value;
   final String label;
   final String foot;
+  final bool loading;
   final VoidCallback onTap;
 
   const _StatCard({
@@ -321,6 +237,7 @@ class _StatCard extends StatelessWidget {
     required this.value,
     required this.label,
     required this.foot,
+    this.loading = false,
     required this.onTap,
   });
 
@@ -331,7 +248,7 @@ class _StatCard extends StatelessWidget {
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
+        onTap: loading ? null : onTap,
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
@@ -360,14 +277,30 @@ class _StatCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 10),
-              Text(
-                value,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppTextStyles.montserratBold.copyWith(
-                  fontSize: 22,
-                  height: 1.1,
-                  color: const Color(0xFF1C2434),
+              SizedBox(
+                height: 26,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child:
+                      loading
+                          ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.2,
+                              color: AppColors.main,
+                            ),
+                          )
+                          : Text(
+                            value,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTextStyles.montserratBold.copyWith(
+                              fontSize: 22,
+                              height: 1.1,
+                              color: const Color(0xFF1C2434),
+                            ),
+                          ),
                 ),
               ),
               const SizedBox(height: 8),
@@ -406,8 +339,19 @@ class _QuickActions extends StatelessWidget {
       ),
       _Action(
         icon: Icons.event_note_outlined,
-        label: 'Bookings',
+        label: 'Quotes',
         onTap: () => HomeActions.openBook(bookTab: 1),
+      ),
+      _Action(
+        icon: Icons.person_add_outlined,
+        label: 'Add user',
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const AddUserScreen(restrictToExternal: true),
+            ),
+          );
+        },
       ),
       _Action(
         icon: Icons.bar_chart_outlined,
@@ -437,11 +381,7 @@ class _Action {
   final String label;
   final VoidCallback onTap;
 
-  const _Action({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
+  const _Action({required this.icon, required this.label, required this.onTap});
 }
 
 class _QuickActionButton extends StatelessWidget {
@@ -593,11 +533,7 @@ class _Slice {
   final int count;
   final Color color;
 
-  const _Slice({
-    required this.label,
-    required this.count,
-    required this.color,
-  });
+  const _Slice({required this.label, required this.count, required this.color});
 }
 
 class _LegendRow extends StatelessWidget {
@@ -636,8 +572,41 @@ class _LegendRow extends StatelessWidget {
   }
 }
 
-class _SampleAccountsScreen extends StatelessWidget {
-  const _SampleAccountsScreen();
+class _AccountTierChip extends StatelessWidget {
+  final String label;
+
+  const _AccountTierChip({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = switch (label) {
+      'VVIP' => const Color(0xFFEDE9FE),
+      'VIP' => const Color(0xFFE0EFFF),
+      _ => const Color(0xFFE8F6ED),
+    };
+    final fg = switch (label) {
+      'VVIP' => const Color(0xFF6D28D9),
+      'VIP' => const Color(0xFF2563EB),
+      _ => const Color(0xFF047857),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        label,
+        style: AppTextStyles.montserratMedium.copyWith(fontSize: 11, color: fg),
+      ),
+    );
+  }
+}
+
+class _AssignedAccountsScreen extends StatelessWidget {
+  final List<SalesAccountChoice> accounts;
+
+  const _AssignedAccountsScreen({required this.accounts});
 
   @override
   Widget build(BuildContext context) {
@@ -647,27 +616,38 @@ class _SampleAccountsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
-          const _SampleNote('Sample account names. No sales-person API yet.'),
-          const SizedBox(height: 12),
-          for (final name in _sampleAccounts) ...[
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: _cardBorder),
-              ),
-              child: Text(
-                name,
-                style: AppTextStyles.montserratMedium.copyWith(
-                  fontSize: 14,
-                  color: const Color(0xFF1C2434),
+          if (accounts.isEmpty)
+            const _DataNote('No customer accounts for your OwnerId yet.')
+          else
+            for (final account in accounts) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 14,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: _cardBorder),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        account.name,
+                        style: AppTextStyles.montserratMedium.copyWith(
+                          fontSize: 14,
+                          color: const Color(0xFF1C2434),
+                        ),
+                      ),
+                    ),
+                    _AccountTierChip(label: account.customerTierLabel),
+                  ],
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-          ],
+              const SizedBox(height: 8),
+            ],
         ],
       ),
     );
@@ -681,10 +661,19 @@ class _ChartSkeleton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 230,
+      alignment: Alignment.center,
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: _cardBorder),
+      ),
+      child: const SizedBox(
+        width: 28,
+        height: 28,
+        child: CircularProgressIndicator(
+          strokeWidth: 2.5,
+          color: AppColors.main,
+        ),
       ),
     );
   }

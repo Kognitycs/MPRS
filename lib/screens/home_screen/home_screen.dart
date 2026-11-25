@@ -19,6 +19,7 @@ import 'package:mprs_android/widget/common_dialog.dart';
 
 import '../../controller/booking_controller.dart';
 import '../../core/constants/api_provider.dart';
+import '../../core/utils/snackbar_util.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -46,8 +47,12 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     loadUserData();
-    controller.getProfile();
-    _refreshHome();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      controller.getProfile();
+    });
+    if (!_isSalesUser) {
+      _refreshHome();
+    }
     _inbox.addListener(_onInbox);
     _inbox.ensureLoaded();
   }
@@ -63,24 +68,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   int _activityRefresh = 0;
-  bool _salesHomeReady = false;
 
   bool get _isSalesUser =>
       AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
 
   Future<void> _refreshHome() async {
     if (_isSalesUser) {
-      // Quotes and bookings are loaded by account id. An internal user has
-      // none, and that request is what shows "Account id is required".
-      if (!_salesHomeReady) {
-        _salesHomeReady = true;
-        return;
-      }
+      // InternalDashboard loads accounts, bookings, and quotes via
+      // InternalHomeStatsService — avoid duplicate network work here.
       if (mounted) setState(() => _activityRefresh++);
       return;
     }
     await Future.wait([
-      bookingController.getConfirmedBookings(accountScoped: true),
+      // Admin: all RMS booked orders (`fetchAdminRmsBookedOrders`). Others: by account.
+      bookingController.getConfirmedBookings(
+        accountScoped: !AuthDataHelper.isAdminUser(),
+      ),
       bookingController.loadTodayBookings(),
       bookingController.getInProgressBookings(
         accountScoped: !AuthDataHelper.isAdminUser(),
@@ -129,7 +132,7 @@ class _HomeScreenState extends State<HomeScreen> {
         userType: user?.userType ?? userRole,
       );
       final name = firstName.isNotEmpty ? firstName : fallback;
-      final badgeCount = _inbox.items.length;
+      final badgeCount = _inbox.unreadBadgeCount;
 
       return Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -369,13 +372,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   MaterialPageRoute(builder: (_) => PreferencesScreen()),
                 );
               }),
-              drawerItem(Icons.headset_mic_outlined, "Support", () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const SupportScreen()),
-                );
-              }),
+              if (!AuthDataHelper.isInternalUser())
+                drawerItem(Icons.headset_mic_outlined, "Support", () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SupportScreen()),
+                  );
+                }),
               drawerItem(Icons.logout, "Logout", () {
                 CommonDialog.showByType(
                   context,
@@ -442,7 +446,7 @@ class _HomeScreenState extends State<HomeScreen> {
         (route) => false,
       );
     } else {
-      Get.snackbar("Error", response.message ?? "Logout failed");
+      showServiceErrorGetSnackbar();
     }
   }
 }

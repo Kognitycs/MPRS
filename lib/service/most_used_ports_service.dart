@@ -243,9 +243,9 @@ class MostUsedPortsService {
       _addUsage(podCounts, podLabels, pod);
     }
 
-    if (AuthDataHelper.isAdminUser()) {
+    if (AuthDataHelper.isAdminUser() || AuthDataHelper.isInternalUser()) {
       try {
-        final quotes = await ApiProvider().fetchAdminAppCreatedQuotations();
+        final quotes = await ApiProvider().fetchRmsAppQuotationsForRole();
         for (final q in quotes) {
           addPair(
             pol: q.originPortR?.name,

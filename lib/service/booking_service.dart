@@ -24,7 +24,14 @@ class BookingService {
   }
 
   /// POST /user/book/quote — reserves space for the given quote.
-  static Future<BookQuoteResult> reserveQuoteSpace(String quoteId) async {
+  ///
+  /// [accountId] must be the **customer** Salesforce Account on the quote.
+  /// External users default to their login account; Internal must pass the
+  /// quote's account (portfolio customer), not the salesperson profile id.
+  static Future<BookQuoteResult> reserveQuoteSpace(
+    String quoteId, {
+    String? accountId,
+  }) async {
     final trimmedQuoteId = quoteId.trim();
     if (trimmedQuoteId.isEmpty) {
       return const BookQuoteResult(
@@ -33,8 +40,20 @@ class BookingService {
       );
     }
 
-    final accountId = resolveAccountId();
-    if (accountId.isEmpty) {
+    var resolvedAccountId = accountId?.trim() ?? '';
+    if (resolvedAccountId.isEmpty) {
+      resolvedAccountId = resolveAccountId();
+    }
+    if (resolvedAccountId.isEmpty && AuthDataHelper.isInternalUser()) {
+      return const BookQuoteResult(
+        success: false,
+        message:
+            'Customer account is missing on this quote. '
+            'Open the quote from Book → Quotations (Accepted) or refresh, '
+            'then try again.',
+      );
+    }
+    if (resolvedAccountId.isEmpty) {
       return const BookQuoteResult(
         success: false,
         message: 'Account information is missing. Please sign in again.',
@@ -53,7 +72,10 @@ class BookingService {
       final response = await HttpClientHelper.postWithBearer(
         ApiConstants.bookQuoteApi,
         token,
-        body: jsonEncode({'quoteId': trimmedQuoteId, 'accountId': accountId}),
+        body: jsonEncode({
+          'quoteId': trimmedQuoteId,
+          'accountId': resolvedAccountId,
+        }),
         headers: const {'Content-Type': 'application/json'},
       );
 

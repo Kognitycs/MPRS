@@ -23,6 +23,7 @@ import 'package:mprs_android/screens/auth/account_created_screen.dart';
 import 'package:mprs_android/screens/auth/login_mobile_screen.dart';
 import 'package:mprs_android/service/http_client_helper.dart';
 import 'package:mprs_android/service/phone_auth_service.dart';
+import 'package:mprs_android/service/salesperson_directory.dart';
 import 'package:mprs_android/widget/common_fields.dart';
 import 'package:mprs_android/widget/common_pin_field.dart';
 import 'package:mprs_android/widget/custom_buttons.dart';
@@ -56,6 +57,9 @@ class _SignupScreenState extends State<SignupScreen> {
   final TextEditingController departmentController = TextEditingController();
   final TextEditingController mobileNumberController = TextEditingController();
   final TextEditingController companyNameController = TextEditingController();
+  final TextEditingController branchNameController = TextEditingController();
+  final TextEditingController cityController = TextEditingController();
+  final TextEditingController postalCodeController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
   final TextEditingController confirmPasswordController =
       TextEditingController();
@@ -83,14 +87,33 @@ class _SignupScreenState extends State<SignupScreen> {
   bool _isSendingMobileOtp = false;
   final PhoneAuthService _phoneAuthService = PhoneAuthService();
   String? companyNameError;
+  String? branchNameError;
+  String? accountTypeError;
+  String? _selectedAccountType;
   String? addressError;
+  String? cityError;
+  String? postalCodeError;
+  String? stateError;
   String? countryError;
   String? passwordError;
   String? confirmPasswordError;
 
   final countries = CountryUtils.getAllCountries();
   final region = CountryUtils.getRegion();
+  final indianStates = CountryUtils.getIndianStates();
   bool _showOptionalFields = false;
+
+  static const List<String> _accountTypeOptions = [
+    'Shipper',
+    'Agent/Forwarder',
+    'Consignee',
+    'Overseas Agent',
+  ];
+
+  String? _salespersonState;
+  List<SalespersonOption> _salespersons = [];
+  bool _salespersonsLoading = false;
+  String? _selectedSalespersonId;
 
   bool get _isMobileComplete =>
       RegExp(r'^[0-9]{10}$').hasMatch(mobileNumberController.text.trim());
@@ -231,6 +254,7 @@ class _SignupScreenState extends State<SignupScreen> {
     departmentController.dispose();
     mobileNumberController.dispose();
     companyNameController.dispose();
+    branchNameController.dispose();
     passwordController.dispose();
     confirmPasswordController.dispose();
     super.dispose();
@@ -392,6 +416,37 @@ class _SignupScreenState extends State<SignupScreen> {
                 errorText: companyNameError,
               ),
 
+              buildSignupDropdown(
+                context: context,
+                label: 'Account type',
+                hint: 'Select account type',
+                items: _accountTypeOptions,
+                value: _selectedAccountType,
+                isRequired: true,
+                errorText: accountTypeError,
+                onChanged: (value) {
+                  setState(() {
+                    _selectedAccountType = value;
+                    if (value != null && value.trim().isNotEmpty) {
+                      accountTypeError = null;
+                    }
+                  });
+                },
+              ),
+
+              buildSignupTextField(
+                label: 'Branch name',
+                hint: 'Enter branch name',
+                controller: branchNameController,
+                isRequired: true,
+                onChanged: (value) {
+                  setState(() {
+                    if (value.trim().isNotEmpty) branchNameError = null;
+                  });
+                },
+                errorText: branchNameError,
+              ),
+
               buildSignupTextField(
                 label: "Company GSTIN Number",
                 hint: "Enter your Company's GSTIN Number",
@@ -454,9 +509,9 @@ class _SignupScreenState extends State<SignupScreen> {
                 errorText: confirmPasswordError,
               ),
               buildSignupTextField(
-                label: "Address",
+                label: "Street",
                 isRequired: true,
-                hint: "Enter your Address",
+                hint: "Enter street address",
                 controller: addressController,
                 inputType: TextInputType.streetAddress,
                 onChanged: (value) {
@@ -465,6 +520,31 @@ class _SignupScreenState extends State<SignupScreen> {
                   });
                 },
                 errorText: addressError,
+              ),
+              buildSignupTextField(
+                label: "City",
+                isRequired: true,
+                hint: "Enter city",
+                controller: cityController,
+                onChanged: (value) {
+                  setState(() {
+                    if (value.trim().isNotEmpty) cityError = null;
+                  });
+                },
+                errorText: cityError,
+              ),
+              buildSignupTextField(
+                label: "Postal code",
+                isRequired: true,
+                hint: "Enter postal code",
+                controller: postalCodeController,
+                inputType: TextInputType.number,
+                onChanged: (value) {
+                  setState(() {
+                    if (value.trim().isNotEmpty) postalCodeError = null;
+                  });
+                },
+                errorText: postalCodeError,
               ),
               buildSignupDropdown(
                 context: context,
@@ -483,6 +563,56 @@ class _SignupScreenState extends State<SignupScreen> {
                 },
                 errorText: countryError,
               ),
+              buildSignupDropdown(
+                context: context,
+                label: 'State',
+                isRequired: true,
+                hint: 'Select state (to load sales persons)',
+                items: indianStates,
+                value: _salespersonState,
+                errorText: stateError,
+                onChanged: (value) {
+                  setState(() {
+                    _salespersonState = value;
+                    if (value != null && value.trim().isNotEmpty) {
+                      stateError = null;
+                    }
+                    _selectedSalespersonId = null;
+                    _salespersons = [];
+                  });
+                  if (value != null && value.trim().isNotEmpty) {
+                    _loadSalespersons(value);
+                  }
+                },
+              ),
+              if (_salespersonsLoading)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Center(
+                    child: SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              else if (_salespersonState != null &&
+                  _salespersonState!.trim().isNotEmpty)
+                buildSignupDropdown(
+                  context: context,
+                  label: 'Sales person',
+                  hint: _salespersons.isEmpty
+                      ? 'No sales persons for this state'
+                      : 'Select sales person (Optional)',
+                  items: _salespersons.map((e) => e.name).toList(),
+                  value: _salespersonLabelForId(_selectedSalespersonId),
+                  enabled: _salespersons.isNotEmpty,
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedSalespersonId = _salespersonIdForName(value);
+                    });
+                  },
+                ),
               const SizedBox(height: 10),
 
               ExpansionTile(
@@ -798,6 +928,36 @@ class _SignupScreenState extends State<SignupScreen> {
     );
   }
 
+  String? _salespersonLabelForId(String? id) {
+    if (id == null) return null;
+    for (final p in _salespersons) {
+      if (p.id == id) return p.name;
+    }
+    return null;
+  }
+
+  String? _salespersonIdForName(String? name) {
+    if (name == null) return null;
+    for (final p in _salespersons) {
+      if (p.name == name) return p.id;
+    }
+    return null;
+  }
+
+  Future<void> _loadSalespersons(String state) async {
+    setState(() => _salespersonsLoading = true);
+    final list = await SalespersonDirectory.loadByState(state);
+    if (!mounted) return;
+    setState(() {
+      _salespersonsLoading = false;
+      _salespersons = list;
+      if (_selectedSalespersonId != null &&
+          !list.any((e) => e.id == _selectedSalespersonId)) {
+        _selectedSalespersonId = null;
+      }
+    });
+  }
+
   Future<void> signup() async {
     if (!validateFields()) return;
 
@@ -850,11 +1010,20 @@ class _SignupScreenState extends State<SignupScreen> {
           'designation': (user.designation ?? '').trim(),
           'department': (user.department ?? '').trim(),
           'companyName': (user.companyName ?? '').trim(),
+          'branchName': branchNameController.text.trim(),
+          if (_selectedAccountType != null &&
+              _selectedAccountType!.trim().isNotEmpty)
+            'accountType': _selectedAccountType!.trim(),
+          'street': addressController.text.trim(),
+          'city': cityController.text.trim(),
+          'postalCode': postalCodeController.text.trim(),
+          'state': CountryUtils.salesforceIndianStateCode(_salespersonState),
           'landlineNumber': (user.landlineNumber ?? '').trim(),
           'extentionNumber': (user.extentionNumber ?? '').trim(),
           'address': (user.address ?? '').trim(),
-          'country': (user.country ?? '').trim(),
-          'region': (user.region ?? '').trim(),
+          'country': CountryUtils.salesforceCountryCode(user.country),
+          'region':
+              CountryUtils.salesforceIndianStateCode(_salespersonState),
           'gstin': (user.gstin ?? '').trim(),
           'termsAccepted': 'true',
           'Active_RMS_User': 'false',
@@ -862,6 +1031,9 @@ class _SignupScreenState extends State<SignupScreen> {
           'userType': (user.userType ?? '').trim(),
           'deviceType': (user.deviceType ?? '').trim(),
           'password': passwordController.text.trim(),
+          if (_selectedSalespersonId != null &&
+              _selectedSalespersonId!.trim().isNotEmpty)
+            'salespersonId': _selectedSalespersonId!.trim(),
         },
         file: user.profileImageFile,
       );
@@ -926,9 +1098,33 @@ class _SignupScreenState extends State<SignupScreen> {
               ? "Please enter company name"
               : null;
 
+      branchNameError =
+          branchNameController.text.trim().isEmpty
+              ? 'Please enter branch name'
+              : null;
+
+      accountTypeError =
+          (_selectedAccountType == null ||
+                  _selectedAccountType!.trim().isEmpty)
+              ? 'Please select an account type'
+              : null;
+
       addressError =
           addressController.text.trim().isEmpty
-              ? "Please enter address"
+              ? "Please enter street"
+              : null;
+
+      cityError =
+          cityController.text.trim().isEmpty ? "Please enter city" : null;
+
+      postalCodeError =
+          postalCodeController.text.trim().isEmpty
+              ? "Please enter postal code"
+              : null;
+
+      stateError =
+          (_salespersonState == null || _salespersonState!.trim().isEmpty)
+              ? "Please select state"
               : null;
 
       countryError =
@@ -963,7 +1159,12 @@ class _SignupScreenState extends State<SignupScreen> {
         firstNameError == null &&
         lastNameError == null &&
         companyNameError == null &&
+        branchNameError == null &&
+        accountTypeError == null &&
         addressError == null &&
+        cityError == null &&
+        postalCodeError == null &&
+        stateError == null &&
         countryError == null &&
         mobileError == null &&
         gstinError == null &&

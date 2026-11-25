@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:mprs_android/core/constants/db_helper.dart';
 import 'package:mprs_android/core/utils/network.dart';
 import 'package:mprs_android/core/utils/progress_dialog.dart';
 import 'package:mprs_android/core/utils/snackbar_util.dart';
+import 'package:mprs_android/model/common/user_data.dart';
 import 'package:mprs_android/model/login_response.dart';
 import 'package:mprs_android/screens/auth/new_mpin_screen.dart';
 import 'package:mprs_android/screens/auth/signup_screen.dart';
@@ -230,21 +232,18 @@ class _LoginPasswordScreenState extends State<LoginPasswordScreen> {
   }
 
   Future<void> login() async {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _passwordFocusNode.unfocus();
-      FocusScope.of(context).unfocus();
-    });
+    FocusScope.of(context).unfocus();
 
     ProgressLoader.show(context);
 
-    if (!(await checkInternetConnection())) {
-      ProgressLoader.hide(context);
-      showSnackBar(context, AppStrings.pleaseCheckInternet);
-      return;
-    }
-
     try {
-      var response = await HttpClientHelper.postWithApplicationJson(
+      if (!(await checkInternetConnection())) {
+        if (!mounted) return;
+        showSnackBar(context, AppStrings.pleaseCheckInternet);
+        return;
+      }
+
+      final response = await HttpClientHelper.postWithApplicationJson(
         ApiConstants.login,
         headers: {
           'Accept': 'application/json',
@@ -256,40 +255,47 @@ class _LoginPasswordScreenState extends State<LoginPasswordScreen> {
         }),
       );
 
-      ProgressLoader.hide(context);
+      if (!mounted) return;
 
-      /// Decode the response first
       final decoded = jsonDecode(response.data);
-
-      /// Convert to object
       final userData = LoginResponse.fromJson(decoded);
 
-      /// Check success
       if (response.statusCode == 200 && userData.user != null) {
-        // save user
-        AuthDataHelper.saveUserData(userData.user!);
-        DbHelper().saveUserModel(userData.user);
+        final taggedAccountId =
+            UserData.parseAccountIdFromPayload(decoded) ??
+            userData.user!.accountId;
+        final userForStore =
+            (taggedAccountId != null && taggedAccountId.isNotEmpty)
+                ? userData.user!.copyWith(accountId: taggedAccountId)
+                : userData.user!;
+
+        AuthDataHelper.saveUserData(userForStore);
+        DbHelper().saveUserModel(userForStore);
         DbHelper().saveUserToken(userData.token);
-        // save token
         AuthDataHelper.saveUserToken(userData.token);
-        if (userData.user?.accountId != null &&
-            userData.user!.accountId!.isNotEmpty) {
-          AuthDataHelper.saveAccountId(userData.user!.accountId!);
+        if (taggedAccountId != null && taggedAccountId.isNotEmpty) {
+          AuthDataHelper.saveAccountId(taggedAccountId);
         }
-        // AuthDataHelper.saveAccountId(userData.user?.accountId ?? "");
-        print("🔥 SAVED ACCOUNT ID: ${AuthDataHelper.getAccountId()}");
-        await FcmTokenService.syncToBackend();
-        if (!context.mounted) return;
-        Navigator.pushReplacement(
+
+        if (!mounted) return;
+        await Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => NewMpinScreen()),
+          MaterialPageRoute(builder: (_) => const NewMpinScreen()),
         );
-      } else {
-        showSnackBar(context, decoded['message'] ?? "Login failed");
+
+        // Do not block MPIN setup on FCM (retries/permissions can take many seconds).
+        unawaited(FcmTokenService.syncToBackend());
+        return;
       }
+
+      showSnackBar(context, decoded['message'] ?? 'Login failed');
     } catch (e) {
-      ProgressLoader.hide(context);
+      if (!mounted) return;
       showSnackBar(context, 'Error during login: $e');
+    } finally {
+      if (mounted) {
+        ProgressLoader.hide(context);
+      }
     }
   }
 

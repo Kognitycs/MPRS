@@ -309,6 +309,7 @@
 //
 //
 // }
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -322,17 +323,16 @@ import 'package:mprs_android/model/common/user_data.dart';
 import 'package:mprs_android/model/update_profile_response.dart';
 import 'package:mprs_android/service/fcm_token_service.dart';
 import 'package:mprs_android/service/http_client_helper.dart';
+import 'package:mprs_android/core/database/notification_db.dart';
 import 'package:mprs_android/service/notification/notification_inbox_store.dart';
 import 'package:mprs_android/service/notification/notification_poll_service.dart';
+import 'package:mprs_android/service/sales_account_directory.dart';
+import 'package:mprs_android/service/salesperson_directory.dart';
 
 import '../core/utils/snackbar_util.dart';
 
 class EditProfileController extends GetxController {
-
-
   Rxn<UserData?> userData = Rxn();
-
-
 
   // Text Controllers
   final firstNameController = TextEditingController();
@@ -348,6 +348,8 @@ class EditProfileController extends GetxController {
   final landlineNumberController = TextEditingController();
   final extensionController = TextEditingController();
   final addressController = TextEditingController();
+  final taggedAccountController = TextEditingController();
+  final salesPersonController = TextEditingController();
 
   // Observable states (Rx)
   var selectedCountry = Rxn<String>();
@@ -360,6 +362,9 @@ class EditProfileController extends GetxController {
   // Avatar header observables — these are what Obx listens to in the screen
   var displayName = "".obs;
   var displayEmail = "".obs;
+  var showInternalTaggedAccount = false.obs;
+  var showExternalSalesPerson = false.obs;
+  var taggedAccountLabel = 'None'.obs;
 
   // Error states (Rx)
   var firstNameError = Rxn<String>();
@@ -391,8 +396,12 @@ class EditProfileController extends GetxController {
     extensionController.text = AuthDataHelper.getExtension();
     addressController.text = AuthDataHelper.getAddress();
 
-    selectedCountry.value = AuthDataHelper.getCountry().isEmpty ? null : AuthDataHelper.getCountry();
-    selectedRegion.value = AuthDataHelper.getRegion().isEmpty ? null : AuthDataHelper.getRegion();
+    selectedCountry.value =
+        AuthDataHelper.getCountry().isEmpty
+            ? null
+            : AuthDataHelper.getCountry();
+    selectedRegion.value =
+        AuthDataHelper.getRegion().isEmpty ? null : AuthDataHelper.getRegion();
     userRole.value = AuthDataHelper.getUserType();
 
     // Keep avatar header in sync
@@ -402,6 +411,65 @@ class EditProfileController extends GetxController {
 
     // Clear picked image after a successful refresh/save
     pickedImage.value = null;
+
+    showExternalSalesPerson.value = _isExternalFamily(userRole.value);
+    if (showExternalSalesPerson.value &&
+        salesPersonController.text.trim().isEmpty) {
+      salesPersonController.text = 'None';
+    }
+    unawaited(_refreshTaggedAccountDisplay());
+  }
+
+  bool _isExternalFamily(String role) {
+    final value = role.toLowerCase().trim();
+    return value == 'external' || value == 'vip' || value == 'vvip';
+  }
+
+  Future<void> _refreshTaggedAccountDisplay() async {
+    final isInternal = userRole.value.toLowerCase().trim() == 'internal';
+    showInternalTaggedAccount.value = isInternal;
+    if (!isInternal) {
+      taggedAccountLabel.value = 'None';
+      taggedAccountController.text = '';
+      return;
+    }
+
+    taggedAccountLabel.value = 'Loading…';
+    taggedAccountController.text = 'Loading…';
+
+    final name =
+        await SalesAccountDirectory.labeledTaggedAccountForInternalProfile();
+
+    final resolvedAccountId = AuthDataHelper.getAccountId().trim();
+    if (resolvedAccountId.isNotEmpty) {
+      final base = userData.value ?? DbHelper().getUserModel();
+      if (base != null) {
+        userData.value = base.copyWith(accountId: resolvedAccountId);
+      }
+    }
+
+    taggedAccountLabel.value = name.isEmpty ? 'None' : name;
+    taggedAccountController.text = taggedAccountLabel.value;
+  }
+
+  Future<void> _refreshSalesPersonDisplay() async {
+    final isExternal = _isExternalFamily(userRole.value);
+    showExternalSalesPerson.value = isExternal;
+    if (!isExternal) {
+      salesPersonController.text = '';
+      return;
+    }
+
+    final user = userData.value ?? DbHelper().getUserModel();
+    var name = user?.salespersonName?.trim() ?? '';
+    if (name.isEmpty) {
+      final id = user?.salespersonId?.trim() ?? '';
+      if (id.isNotEmpty) {
+        salesPersonController.text = 'Loading…';
+        name = (await SalespersonDirectory.findNameById(id))?.trim() ?? '';
+      }
+    }
+    salesPersonController.text = name.isEmpty ? 'None' : name;
   }
 
   Future<void> pickImage() async {
@@ -409,8 +477,13 @@ class EditProfileController extends GetxController {
     if (picked != null) {
       final file = File(picked.path);
       if (await file.length() > 2 * 1024 * 1024) {
-        Get.snackbar("Error", "Image size should not exceed 2MB",
-            snackPosition: SnackPosition.BOTTOM, backgroundColor: Colors.red, colorText: Colors.white);
+        Get.snackbar(
+          "Error",
+          "Image size should not exceed 2MB",
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.red,
+          colorText: Colors.white,
+        );
         return;
       }
       pickedImage.value = file;
@@ -418,10 +491,20 @@ class EditProfileController extends GetxController {
   }
 
   bool validateFields() {
-    firstNameError.value = firstNameController.text.trim().isEmpty ? "Please enter first name" : null;
-    lastNameError.value = lastNameController.text.trim().isEmpty ? "Please enter last name" : null;
-    emailError.value = emailController.text.trim().isEmpty ? "Please enter email" : null;
-    companyNameError.value = companyNameController.text.trim().isEmpty ? "Please enter company name" : null;
+    firstNameError.value =
+        firstNameController.text.trim().isEmpty
+            ? "Please enter first name"
+            : null;
+    lastNameError.value =
+        lastNameController.text.trim().isEmpty
+            ? "Please enter last name"
+            : null;
+    emailError.value =
+        emailController.text.trim().isEmpty ? "Please enter email" : null;
+    companyNameError.value =
+        companyNameController.text.trim().isEmpty
+            ? "Please enter company name"
+            : null;
 
     if (!RegExp(r'^[0-9]{10}$').hasMatch(mobileNumberController.text.trim())) {
       alternateMobileError.value = "Mobile number must be exactly 10 digits";
@@ -444,13 +527,17 @@ class EditProfileController extends GetxController {
 
     try {
       final token = AuthDataHelper.getToken();
+      final emailForSave =
+          AuthDataHelper.isInternalUser()
+              ? AuthDataHelper.getEmail()
+              : emailController.text.trim();
       final response = await HttpClientHelper.patchWithMultipart(
         ApiConstants.profile,
         token,
         fields: {
           'firstName': firstNameController.text.trim(),
           'lastName': lastNameController.text.trim(),
-          'email': emailController.text.trim(),
+          'email': emailForSave,
           'alternateEmail': alternateEmailController.text.trim(),
           'mobile': mobileNumberController.text.trim(),
           'alternateMobile': alternateMobileController.text.trim(),
@@ -481,26 +568,29 @@ class EditProfileController extends GetxController {
         }
 
         if (AuthDataHelper.isAdminUser()) {
-          Get.snackbar("Success", "Profile updated successfully",
-              backgroundColor: Colors.green, colorText: Colors.white);
+          Get.snackbar(
+            "Success",
+            "Profile updated successfully",
+            backgroundColor: Colors.green,
+            colorText: Colors.white,
+          );
         } else {
           showSnackBar(Get.context!, "Request sent to admin for approval");
         }
       } else if (response.statusCode == 400) {
-        Get.snackbar("Notice", "You have already sent a request to admin",
-            backgroundColor: AppColors.main,
-            colorText: Colors.white,
-            snackPosition: SnackPosition.BOTTOM);
+        Get.snackbar(
+          "Notice",
+          "You have already sent a request to admin",
+          backgroundColor: AppColors.main,
+          colorText: Colors.white,
+          snackPosition: SnackPosition.BOTTOM,
+        );
       } else {
-        Get.snackbar("Error", "Update failed: ${response.statusCode}",
-            backgroundColor: Colors.red,
-            colorText: Colors.white,
-            snackPosition: SnackPosition.BOTTOM);
+        showServiceErrorGetSnackbar();
       }
     } catch (e) {
       debugPrint("SaveUser Error: $e");
-      Get.snackbar("Error", "Something went wrong",
-          backgroundColor: Colors.red, colorText: Colors.white);
+      showServiceErrorGetSnackbar();
     } finally {
       isLoading.value = false;
     }
@@ -534,40 +624,17 @@ class EditProfileController extends GetxController {
         DbHelper().clearAll();
         await AuthDataHelper.clearAllData();
         NotificationInboxStore.instance.clearSession();
+        await NotificationDB.instance.clearInboxOnLogout();
         await FcmTokenService.clearOnLogout();
         await NotificationPollService.clearSeenOnLogout();
         return true;
       }
 
-      String message = 'Could not delete account';
-      if (response.data.isNotEmpty) {
-        try {
-          final decoded = jsonDecode(response.data);
-          if (decoded is Map && decoded['message'] != null) {
-            message = decoded['message'].toString();
-          }
-        } catch (_) {}
-      } else if (response.message != null && response.message!.isNotEmpty) {
-        message = response.message!;
-      }
-
-      Get.snackbar(
-        'Error',
-        message,
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-        snackPosition: SnackPosition.BOTTOM,
-      );
+      showServiceErrorGetSnackbar();
       return false;
     } catch (e) {
       debugPrint('Delete account error: $e');
-      Get.snackbar(
-        'Error',
-        'Something went wrong',
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-        snackPosition: SnackPosition.BOTTOM,
-      );
+      showServiceErrorGetSnackbar();
       return false;
     } finally {
       isDeletingAccount.value = false;
@@ -589,6 +656,8 @@ class EditProfileController extends GetxController {
     landlineNumberController.dispose();
     extensionController.dispose();
     addressController.dispose();
+    taggedAccountController.dispose();
+    salesPersonController.dispose();
     super.onClose();
   }
 
@@ -598,22 +667,42 @@ class EditProfileController extends GetxController {
       final token = AuthDataHelper.getToken();
 
       final response = await HttpClientHelper.getWithBearer(
-          ApiConstants.profile, token);
+        ApiConstants.profile,
+        token,
+      );
 
       if (response.statusCode == 200) {
-        final decodedData = jsonDecode(response.data);
-        final userModel = UserData.fromJson(decodedData['user'] ?? decodedData);
+        final decodedRaw = jsonDecode(response.data);
+        final decodedData =
+            decodedRaw is Map
+                ? Map<String, dynamic>.from(decodedRaw)
+                : <String, dynamic>{};
+        final userJson =
+            UserData.resolveUserJson(decodedData) ?? decodedData;
+        final userModel = UserData.fromJson(userJson);
+        final profileAccountId =
+            UserData.parseAccountIdFromPayload(decodedData) ??
+            userModel.accountId;
 
         // The profile endpoint may not return accountId / contactId.
         // Preserve them from the existing DbHelper record so data fetching
         // (savedQuotations, bookings) never loses the Salesforce account link.
         final existing = DbHelper().getUserModel();
-        final mergedAccountId = (userModel.accountId?.isNotEmpty == true)
-            ? userModel.accountId
-            : existing?.accountId;
-        final mergedContactId = (userModel.contactId?.isNotEmpty == true)
-            ? userModel.contactId
-            : existing?.contactId;
+        var mergedAccountId =
+            (profileAccountId?.isNotEmpty == true)
+                ? profileAccountId
+                : existing?.accountId;
+        if (mergedAccountId?.isEmpty ?? true) {
+          final fetched =
+              await SalesAccountDirectory.refreshInternalTaggedAccountId(
+                forceProfileFetch: true,
+              );
+          if (fetched.isNotEmpty) mergedAccountId = fetched;
+        }
+        final mergedContactId =
+            (userModel.contactId?.isNotEmpty == true)
+                ? userModel.contactId
+                : existing?.contactId;
 
         final merged = UserData(
           userId: userModel.userId,
@@ -647,24 +736,36 @@ class EditProfileController extends GetxController {
           v: userModel.v,
           accountId: mergedAccountId,
           contactId: mergedContactId,
+          salespersonId:
+              (userModel.salespersonId?.trim().isNotEmpty == true)
+                  ? userModel.salespersonId
+                  : existing?.salespersonId,
+          salespersonName:
+              (userModel.salespersonName?.trim().isNotEmpty == true)
+                  ? userModel.salespersonName
+                  : existing?.salespersonName,
         );
 
         // Keep both caches in sync so userType and accountId are always fresh.
         AuthDataHelper.saveUserData(merged);
         DbHelper().saveUserModel(merged);
+        final taggedId = mergedAccountId?.trim() ?? '';
+        if (taggedId.isNotEmpty) {
+          AuthDataHelper.saveAccountId(taggedId);
+        }
         userData.value = merged;
 
-        initUserData(); // pulls fresh data from AuthDataHelper + syncs displayName/displayEmail
+        initUserData(); // fields + header from AuthDataHelper
+        await _refreshTaggedAccountDisplay();
+        await _refreshSalesPersonDisplay();
       } else {
-        Get.snackbar("Error", response.message ?? "Failed to fetch profile");
+        showServiceErrorGetSnackbar();
       }
     } catch (e) {
       debugPrint("❌ Error in getProfile: $e");
-      Get.snackbar("Error", "Something went wrong while fetching profile");
+      showServiceErrorGetSnackbar();
     } finally {
       isLoading.value = false;
     }
   }
-
-
 }

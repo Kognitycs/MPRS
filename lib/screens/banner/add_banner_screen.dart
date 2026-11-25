@@ -96,7 +96,7 @@ class _AddBannerScreenState extends State<AddBannerScreen> {
 
       showSnackBar(context, 'Image selected successfully');
     } catch (e) {
-      showSnackBar(context, 'Error selecting image: ${e.toString()}');
+      showServiceErrorSnackBar(context);
     }
   }
 
@@ -511,7 +511,7 @@ class _AddBannerScreenState extends State<AddBannerScreen> {
       showSnackBar(context, "Error: Invalid response format from server");
     } catch (e) {
       Loader.hide();
-      showSnackBar(context, "Error updating banner: ${e.toString()}");
+      showServiceErrorSnackBar(context);
     }
   }
 
@@ -594,11 +594,11 @@ class _AddBannerScreenState extends State<AddBannerScreen> {
         showSnackBar(context, response.message ?? "");
         Navigator.pop(context, createdBanner);
       } else {
-        showSnackBar(context, "Error: ${response.message}");
+        showServiceErrorSnackBar(context);
       }
     } catch (e) {
       Loader.hide();
-      showSnackBar(context, "Something went wrong: $e");
+      showServiceErrorSnackBar(context);
     }
   }
 

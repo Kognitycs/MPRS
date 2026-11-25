@@ -755,10 +755,7 @@ Future<void> _confirmAndDeleteAccount(
       return AlertDialog(
         title: const Text(
           'Delete account?',
-          style: TextStyle(
-            color: _kDangerColor,
-            fontWeight: FontWeight.w700,
-          ),
+          style: TextStyle(color: _kDangerColor, fontWeight: FontWeight.w700),
         ),
         content: const Text(
           'This permanently deletes your account and cannot be undone. '
@@ -817,7 +814,7 @@ class EditUserProfileScreen extends StatelessWidget {
         child: Stack(
           children: [
             SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 10, 20, 200),
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 128),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -827,31 +824,34 @@ class EditUserProfileScreen extends StatelessWidget {
                     child: Stack(
                       alignment: Alignment.bottomRight,
                       children: [
-                        Obx(() => Container(
-                          width: 120,
-                          height: 120,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: AppColors.main.withOpacity(0.3),
-                              width: 2.5,
+                        Obx(
+                          () => Container(
+                            width: 120,
+                            height: 120,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: AppColors.main.withOpacity(0.3),
+                                width: 2.5,
+                              ),
+                            ),
+                            child: CircleAvatar(
+                              radius: 58,
+                              backgroundColor: Colors.grey[200],
+                              child: ClipOval(
+                                child:
+                                    controller.pickedImage.value != null
+                                        ? Image.file(
+                                          controller.pickedImage.value!,
+                                          width: 116,
+                                          height: 116,
+                                          fit: BoxFit.cover,
+                                        )
+                                        : _buildNetworkImage(),
+                              ),
                             ),
                           ),
-                          child: CircleAvatar(
-                            radius: 58,
-                            backgroundColor: Colors.grey[200],
-                            child: ClipOval(
-                              child: controller.pickedImage.value != null
-                                  ? Image.file(
-                                controller.pickedImage.value!,
-                                width: 116,
-                                height: 116,
-                                fit: BoxFit.cover,
-                              )
-                                  : _buildNetworkImage(),
-                            ),
-                          ),
-                        )),
+                        ),
                         Positioned(
                           bottom: 2,
                           right: 2,
@@ -885,24 +885,28 @@ class EditUserProfileScreen extends StatelessWidget {
 
                   // Name + email below avatar — uses Rx strings from controller
                   const SizedBox(height: 10),
-                  Obx(() => Text(
-                    "${controller.displayName.value}",
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.black87,
+                  Obx(
+                    () => Text(
+                      "${controller.displayName.value}",
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.black87,
+                      ),
                     ),
-                  )),
-                  Obx(() => Text(
-                    controller.displayEmail.value,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: AppColors.grey,
-                      fontWeight: FontWeight.w500,
+                  ),
+                  Obx(
+                    () => Text(
+                      controller.displayEmail.value,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.grey,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
-                  )),
+                  ),
 
                   const SizedBox(height: 28),
 
@@ -910,23 +914,27 @@ class EditUserProfileScreen extends StatelessWidget {
                   _sectionHeader("Basic Information"),
                   const SizedBox(height: 12),
 
-                  Obx(() => buildUserTextField(
-                    label: "First Name",
-                    hint: "Enter your First Name",
-                    isRequired: true,
-                    controller: controller.firstNameController,
-                    errorText: controller.firstNameError.value,
-                    onChanged: (_) => controller.firstNameError.value = null,
-                  )),
+                  Obx(
+                    () => buildUserTextField(
+                      label: "First Name",
+                      hint: "Enter your First Name",
+                      isRequired: true,
+                      controller: controller.firstNameController,
+                      errorText: controller.firstNameError.value,
+                      onChanged: (_) => controller.firstNameError.value = null,
+                    ),
+                  ),
 
-                  Obx(() => buildUserTextField(
-                    label: "Last Name",
-                    hint: "Enter your Last Name",
-                    isRequired: true,
-                    controller: controller.lastNameController,
-                    errorText: controller.lastNameError.value,
-                    onChanged: (_) => controller.lastNameError.value = null,
-                  )),
+                  Obx(
+                    () => buildUserTextField(
+                      label: "Last Name",
+                      hint: "Enter your Last Name",
+                      isRequired: true,
+                      controller: controller.lastNameController,
+                      errorText: controller.lastNameError.value,
+                      onChanged: (_) => controller.lastNameError.value = null,
+                    ),
+                  ),
 
                   buildUserTextField(
                     label: "Mobile Number",
@@ -937,15 +945,24 @@ class EditUserProfileScreen extends StatelessWidget {
                     inputType: TextInputType.phone,
                   ),
 
-                  Obx(() => buildUserTextField(
-                    label: "Email",
-                    hint: "Enter your Email",
-                    isRequired: true,
-                    controller: controller.emailController,
-                    inputType: TextInputType.emailAddress,
-                    errorText: controller.emailError.value,
-                    onChanged: (_) => controller.emailError.value = null,
-                  )),
+                  Obx(
+                    () => buildUserTextField(
+                      label: "Email",
+                      hint:
+                          AuthDataHelper.isInternalUser()
+                              ? 'Your registered email'
+                              : 'Enter your Email',
+                      isRequired: true,
+                      editable: !AuthDataHelper.isInternalUser(),
+                      controller: controller.emailController,
+                      inputType: TextInputType.emailAddress,
+                      errorText: controller.emailError.value,
+                      onChanged:
+                          AuthDataHelper.isInternalUser()
+                              ? null
+                              : (_) => controller.emailError.value = null,
+                    ),
+                  ),
 
                   buildUserTextField(
                     label: "Company Name",
@@ -973,6 +990,31 @@ class EditUserProfileScreen extends StatelessWidget {
                     editable: false,
                     controller: controller.departmentController,
                   ),
+
+                  Obx(() {
+                    if (!controller.showInternalTaggedAccount.value) {
+                      return const SizedBox.shrink();
+                    }
+                    final _ = controller.taggedAccountLabel.value;
+                    return buildUserTextField(
+                      label: 'Tagged account',
+                      hint: 'None',
+                      editable: false,
+                      controller: controller.taggedAccountController,
+                    );
+                  }),
+
+                  Obx(() {
+                    if (!controller.showExternalSalesPerson.value) {
+                      return const SizedBox.shrink();
+                    }
+                    return buildUserTextField(
+                      label: 'Sales person',
+                      hint: 'None',
+                      editable: false,
+                      controller: controller.salesPersonController,
+                    );
+                  }),
 
                   buildUserTextField(
                     label: "Landline Number",
@@ -1034,25 +1076,28 @@ class EditUserProfileScreen extends StatelessWidget {
                   _sectionHeader("Location"),
                   const SizedBox(height: 12),
 
-                  Obx(() => buildRoundedDropdown(
-                    label: "Country",
-                    hint: "Select Country (Optional)",
-                    items: countries,
-                    value: controller.selectedCountry.value,
-                    onChanged: (val) =>
-                    controller.selectedCountry.value = val,
-                    context: context,
-                  )),
+                  Obx(
+                    () => buildRoundedDropdown(
+                      label: "Country",
+                      hint: "Select Country (Optional)",
+                      items: countries,
+                      value: controller.selectedCountry.value,
+                      onChanged:
+                          (val) => controller.selectedCountry.value = val,
+                      context: context,
+                    ),
+                  ),
 
-                  Obx(() => buildRoundedDropdown(
-                    label: "Region",
-                    hint: "Select Region (Optional)",
-                    items: regions,
-                    value: controller.selectedRegion.value,
-                    onChanged: (val) =>
-                    controller.selectedRegion.value = val,
-                    context: context,
-                  )),
+                  Obx(
+                    () => buildRoundedDropdown(
+                      label: "Region",
+                      hint: "Select Region (Optional)",
+                      items: regions,
+                      value: controller.selectedRegion.value,
+                      onChanged: (val) => controller.selectedRegion.value = val,
+                      context: context,
+                    ),
+                  ),
 
                   const SizedBox(height: 16),
                 ],
@@ -1065,81 +1110,56 @@ class EditUserProfileScreen extends StatelessWidget {
               left: 0,
               right: 0,
               child: Container(
-                padding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
                 decoration: const BoxDecoration(
                   color: AppColors.white,
                   border: Border(top: BorderSide(color: AppColors.cardBorder)),
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Obx(() => MainButton(
-                      text: controller.isLoading.value
-                          ? 'Saving...'
-                          : 'Save Changes',
-                      onPressed: controller.isLoading.value
-                          ? () {}
-                          : controller.saveUser,
-                    )),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: () => Get.to(() => const ChangePasswordScreen()),
-                      icon: const Icon(Icons.lock_outline_rounded, size: 16),
-                      label: const Text('Change Password'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.main,
-                        side: const BorderSide(color: AppColors.main),
-                        minimumSize: const Size(double.infinity, 46),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        textStyle: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Obx(
-                      () => OutlinedButton.icon(
-                        onPressed: controller.isDeletingAccount.value
+                child: Obx(
+                  () => ProfileStickyActions(
+                    saveLabel:
+                        controller.isLoading.value
+                            ? 'Saving...'
+                            : 'Save Changes',
+                    onSave:
+                        controller.isLoading.value
                             ? null
-                            : () => _confirmAndDeleteAccount(context, controller),
-                        icon: const Icon(Icons.delete_outline_rounded, size: 16),
-                        label: Text(
-                          controller.isDeletingAccount.value
-                              ? 'Deleting...'
-                              : 'Delete Account',
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: _kDangerColor,
-                          side: const BorderSide(color: _kDangerColor),
-                          minimumSize: const Size(double.infinity, 46),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          textStyle: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                            : controller.saveUser,
+                    onChangePassword:
+                        () => Get.to(() => const ChangePasswordScreen()),
+                    showDeleteAccount: !AuthDataHelper.isAdminUser(),
+                    deleteColor: _kDangerColor,
+                    deleteLabel:
+                        controller.isDeletingAccount.value
+                            ? 'Deleting...'
+                            : 'Delete',
+                    onDeleteAccount:
+                        controller.isDeletingAccount.value
+                            ? null
+                            : () => _confirmAndDeleteAccount(
+                              context,
+                              controller,
+                            ),
+                  ),
                 ),
               ),
             ),
 
             // LOADING OVERLAY
-            Obx(() => controller.isLoading.value || controller.isDeletingAccount.value
-                ? Container(
-              color: Colors.black.withOpacity(0.3),
-              child: const Center(
-                child: CircularProgressIndicator(color: AppColors.main),
-              ),
-            )
-                : const SizedBox.shrink()),
+            Obx(
+              () =>
+                  controller.isLoading.value ||
+                          controller.isDeletingAccount.value
+                      ? Container(
+                        color: Colors.black.withOpacity(0.3),
+                        child: const Center(
+                          child: CircularProgressIndicator(
+                            color: AppColors.main,
+                          ),
+                        ),
+                      )
+                      : const SizedBox.shrink(),
+            ),
           ],
         ),
       ),

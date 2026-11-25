@@ -10,9 +10,8 @@ import 'package:mprs_android/service/notification/user_notification_service.dart
 class FcmInboxService {
   FcmInboxService._();
 
-  /// Admin/Internal still sync from server inbox APIs.
-  static bool get usesRemoteInboxApi =>
-      AuthDataHelper.isAdminUser() || AuthDataHelper.isInternalUser();
+  /// Admin inbox management syncs from server APIs; other roles use FCM + SQLite.
+  static bool get usesRemoteInboxApi => AuthDataHelper.isAdminUser();
 
   /// Register token + topics, then load inbox (remote only for privileged roles).
   static Future<List<NotificationItem>> syncInbox({

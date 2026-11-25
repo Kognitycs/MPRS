@@ -8,6 +8,8 @@ import 'package:mprs_android/service/notification/notification_poll_service.dart
 import 'package:mprs_android/service/notification/notification_service.dart';
 import 'package:mprs_android/screens/home_screen/home_screen.dart';
 import 'package:mprs_android/screens/support_screen.dart';
+import 'package:get/get.dart';
+import 'package:mprs_android/controller/search_routes_controller.dart';
 import 'package:mprs_android/screens/home_screen/search_routes_screen.dart';
 import 'package:mprs_android/screens/main_tabs.dart';
 import 'package:mprs_android/screens/notification/notification_screen.dart';
@@ -129,7 +131,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     _refreshNotificationsInBackground();
     final page =
-        AuthDataHelper.isInternalUser()
+        AuthDataHelper.isAdminUser()
             ? const PushNotifi()
             : const NotificationScreen();
     _navigatorKeys[_selectedIndex].currentState?.push(
@@ -143,6 +145,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         (route) => route.isFirst,
       );
     } else {
+      if (index == MainTabs.search &&
+          Get.isRegistered<SearchRouteController>()) {
+        Get.find<SearchRouteController>().clearSelections();
+      }
       if (index == MainTabs.book) {
         _bookTab = 1;
         _bookQuoteFilter = 1;

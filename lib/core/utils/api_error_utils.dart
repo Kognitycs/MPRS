@@ -1,9 +1,17 @@
 import 'dart:convert';
 
+import '../constants/app_strings.dart';
+
+/// Single user-facing message for any service/API failure (never show raw errors).
+String userFacingErrorMessage([Object? technical]) {
+  return AppStrings.serviceNotFound;
+}
+
 /// Extracts a user-facing message from API JSON error bodies.
 String parseApiErrorMessage(
   dynamic body, {
-  String fallback = 'Something went wrong',
+  String? fallback,
+  bool allowSignupDetail = true,
 }) {
   try {
     final Map<String, dynamic>? decoded = switch (body) {
@@ -12,29 +20,58 @@ String parseApiErrorMessage(
       final Map<String, dynamic> m => m,
       _ => null,
     };
-    if (decoded == null) return fallback;
 
-    final rawMessage = decoded['message']?.toString().trim();
-    if (rawMessage != null &&
-        rawMessage.toLowerCase().contains('signup failed')) {
-      return _signupFailureMessage(decoded, rawMessage);
-    }
-
-    if (rawMessage != null && rawMessage.isNotEmpty) {
-      final detailLine = _firstValidationDetail(decoded['details']);
-      if (detailLine != null) {
-        return '$rawMessage ($detailLine)';
+    if (decoded != null) {
+      final rawMessage = decoded['message']?.toString().trim();
+      if (allowSignupDetail &&
+          rawMessage != null &&
+          rawMessage.toLowerCase().contains('signup failed')) {
+        return _signupFailureMessage(decoded, rawMessage);
       }
-      return rawMessage;
+
+      final detailText = _firstDetailMessage(decoded);
+      if (detailText != null && detailText.isNotEmpty) {
+        return _cleanQuotes(detailText);
+      }
+
+      if (rawMessage != null && rawMessage.isNotEmpty) {
+        return _cleanQuotes(rawMessage);
+      }
     }
 
-    final detailLine = _firstValidationDetail(decoded['details']);
-    if (detailLine != null) return detailLine;
-
-    return fallback;
+    return fallback ?? AppStrings.serviceNotFound;
   } catch (_) {
-    return fallback;
+    return fallback ?? AppStrings.serviceNotFound;
   }
+}
+
+String? _firstDetailMessage(Map<String, dynamic> decoded) {
+  final details = decoded['details'];
+  if (details is Map) {
+    final map = Map<String, dynamic>.from(details);
+    for (final key in ['message', 'error', 'errorMessage']) {
+      final t = map[key]?.toString().trim();
+      if (t != null && t.isNotEmpty) return t;
+    }
+    final composite = map['compositeResponse'];
+    if (composite is List) {
+      for (final item in composite) {
+        if (item is! Map) continue;
+        final body = item['body'];
+        if (body is List) {
+          for (final entry in body) {
+            if (entry is Map) {
+              final msg = entry['message']?.toString().trim();
+              if (msg != null && msg.isNotEmpty) return msg;
+            }
+          }
+        }
+      }
+    }
+  }
+  final statusText = decoded['statusText']?.toString().trim();
+  if (statusText != null && statusText.isNotEmpty) return statusText;
+  return null;
 }
 
 String _signupFailureMessage(Map<String, dynamic> decoded, String rawMessage) {
@@ -68,23 +105,13 @@ String _signupFailureMessage(Map<String, dynamic> decoded, String rawMessage) {
 
   final statusText = decoded['statusText']?.toString().trim();
   if (statusText != null && statusText.isNotEmpty) {
-    return 'Registration could not be completed ($statusText). '
+    return 'Registration could not be completed. '
         'This company or GST may already be registered — try Sign In or contact MPRS support.';
   }
 
   return 'Registration could not be completed. '
       'This company name or GST number may already be registered. '
       'Try Sign In or contact MPRS support.';
-}
-
-String? _firstValidationDetail(dynamic details) {
-  if (details is! List || details.isEmpty) return null;
-  final first = details.first;
-  if (first is Map) {
-    final msg = first['message']?.toString().trim();
-    if (msg != null && msg.isNotEmpty) return msg;
-  }
-  return null;
 }
 
 String _cleanQuotes(String value) {

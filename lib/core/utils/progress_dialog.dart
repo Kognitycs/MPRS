@@ -11,9 +11,10 @@ class ProgressLoader {
 
     showDialog(
       context: context,
+      useRootNavigator: true,
       barrierDismissible: false,
       builder: (_) => Center(
-        child: CircularProgressIndicator(color: AppColors.main,),
+        child: CircularProgressIndicator(color: AppColors.main),
       ),
     );
   }

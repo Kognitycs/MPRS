@@ -10,6 +10,8 @@ import 'package:mprs_android/model/port_model.dart';
 import 'package:mprs_android/service/admin_booking_counts_service.dart';
 import 'package:mprs_android/service/http_client_helper.dart';
 import 'package:mprs_android/service/port_service.dart';
+import 'package:mprs_android/service/internal_home_stats_service.dart';
+import 'package:mprs_android/service/sales_account_directory.dart';
 import 'package:mprs_android/widget/common_appbar.dart';
 import 'package:mprs_android/widget/inline_dropdown_overlay.dart';
 
@@ -45,13 +47,46 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
   String _reachFilter = 'All time';
   final _countNumberFormat = NumberFormat('#,###');
 
+  bool get _isInternalSalesUser => AuthDataHelper.isInternalUser();
+
+  InternalHomeStats _internalStats = InternalHomeStats.empty;
+  bool _internalLoading = false;
+  String _taggedAccountLabel = '';
+  List<Map<String, dynamic>> _internalRouteData = [];
+
   @override
   void initState() {
     super.initState();
-    _fetchUserCount();
-    _fetchBookingCounts();
-    _fetchRouteReports();
     _loadPorts();
+    if (_isInternalSalesUser) {
+      _loadInternalAnalytics();
+    } else {
+      _fetchUserCount();
+      _fetchBookingCounts();
+      _fetchRouteReports();
+    }
+  }
+
+  Future<void> _loadInternalAnalytics() async {
+    setState(() => _internalLoading = true);
+    try {
+      final stats =
+          await InternalHomeStatsService.load(refreshBookings: true);
+      final tagged =
+          await SalesAccountDirectory.labeledTaggedAccountForInternalProfile();
+      final routes =
+          await InternalHomeStatsService.loadTopSearchRoutesForInternal(
+            portfolioQuotes: stats.portfolioQuotes,
+          );
+      if (!mounted) return;
+      setState(() {
+        _internalStats = stats;
+        _taggedAccountLabel = tagged;
+        _internalRouteData = routes;
+      });
+    } finally {
+      if (mounted) setState(() => _internalLoading = false);
+    }
   }
 
   Future<void> _fetchBookingCounts({bool forceRefresh = false}) async {
@@ -77,7 +112,8 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
     DateTime? fromDate,
     DateTime? toDate,
   }) async {
-    final label = userType?.trim().isNotEmpty == true ? userType!.trim() : 'ALL';
+    final label =
+        userType?.trim().isNotEmpty == true ? userType!.trim() : 'ALL';
     final url = ApiConstants.adminUserCount(
       userType: userType,
       fromDate: fromDate,
@@ -109,10 +145,7 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
       }
 
       final decoded = jsonDecode(response.data);
-      final parsed = AdminUserCountResponse.fromJson(
-        decoded,
-        userType: label,
-      );
+      final parsed = AdminUserCountResponse.fromJson(decoded, userType: label);
 
       debugPrint('✅ parsed [$label] count=${parsed.count}');
       debugPrint('✅ parsed [$label] message=${parsed.message}');
@@ -170,8 +203,12 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
       debugPrint('📊 Aggregated user analytics (${period.label}):');
       debugPrint('   All user (no userType): ${aggregated.allUsers}');
       debugPrint('   VIP user (userType=VIP): ${aggregated.vipUsers}');
-      debugPrint('   Total Reach — New Customer (External): ${aggregated.newCustomer}');
-      debugPrint('   Total Reach — Repeated (VVIP): ${aggregated.repeatedCustomer}');
+      debugPrint(
+        '   Total Reach — New Customer (External): ${aggregated.newCustomer}',
+      );
+      debugPrint(
+        '   Total Reach — Repeated (VVIP): ${aggregated.repeatedCustomer}',
+      );
 
       if (!mounted) return;
       setState(() => _userCount = aggregated);
@@ -213,9 +250,10 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
       if (destination != null && destination.trim().isNotEmpty) {
         params.add('destination=${Uri.encodeComponent(destination.trim())}');
       }
-      final url = params.isEmpty
-          ? ApiConstants.searchReports
-          : '${ApiConstants.searchReports}?${params.join('&')}';
+      final url =
+          params.isEmpty
+              ? ApiConstants.searchReports
+              : '${ApiConstants.searchReports}?${params.join('&')}';
 
       final response = await HttpClientHelper.getWithBearer(
         url,
@@ -233,7 +271,8 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
         if (decoded is List) {
           raw = decoded;
         } else if (decoded is Map) {
-          raw = decoded['records'] ??
+          raw =
+              decoded['records'] ??
               decoded['data'] ??
               decoded['routes'] ??
               decoded['result'] ??
@@ -251,18 +290,21 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
           final destName =
               (item['Destination_Port__r']?['Name'] ?? '').toString().trim();
           if (originName.isEmpty && destName.isEmpty) continue;
-          final label = (originName.isNotEmpty && destName.isNotEmpty)
-              ? '$originName → $destName'
-              : (originName.isNotEmpty ? originName : destName);
+          final label =
+              (originName.isNotEmpty && destName.isNotEmpty)
+                  ? '$originName → $destName'
+                  : (originName.isNotEmpty ? originName : destName);
           grouped[label] = (grouped[label] ?? 0) + 1;
         }
 
         setState(() {
-          routeData = grouped.entries
-              .map((e) => {'label': e.key, 'count': e.value})
-              .toList();
+          routeData =
+              grouped.entries
+                  .map((e) => {'label': e.key, 'count': e.value})
+                  .toList();
           routeData.sort(
-              (a, b) => (b['count'] as int).compareTo(a['count'] as int));
+            (a, b) => (b['count'] as int).compareTo(a['count'] as int),
+          );
         });
       }
     } catch (e) {
@@ -276,13 +318,30 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: CommonAppBar(
-        title: "Analytics & Report",
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Column(
+      appBar: CommonAppBar(title: "Analytics & Report"),
+      body: RefreshIndicator(
+        color: AppColors.main,
+        onRefresh:
+            _isInternalSalesUser
+                ? _loadInternalAnalytics
+                : () async {
+                  await Future.wait([
+                    _fetchUserCount(),
+                    _fetchBookingCounts(forceRefresh: true),
+                    _fetchRouteReports(
+                      origin: _selectedOrigin,
+                      destination: _selectedDestination,
+                    ),
+                  ]);
+                },
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child:
+                _isInternalSalesUser
+                    ? _buildInternalAnalyticsBody()
+                    : Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
@@ -323,7 +382,194 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
               const SizedBox(height: 20),
             ],
           ),
+          ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildInternalAnalyticsBody() {
+    if (_internalLoading && _internalStats == InternalHomeStats.empty) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 120),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final tiers = _internalStats.customerTiers;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: userStatCard(
+                title: 'All user',
+                value: _formatCount(
+                  _internalStats.accountCount,
+                  loading: _internalLoading,
+                ),
+                icon: Icons.group,
+                iconBgColor: const Color(0xFFDDE6FF),
+                iconColor: const Color(0xFF6479FF),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: userStatCard(
+                title: 'VIP user',
+                value: _formatCount(tiers.vip, loading: _internalLoading),
+                icon: Icons.groups_3,
+                iconBgColor: const Color(0xFFFFE4E4),
+                iconColor: const Color(0xFFFF4A4A),
+              ),
+            ),
+          ],
+        ),
+        if (_taggedAccountLabel.isNotEmpty &&
+            _taggedAccountLabel != 'None') ...[
+          const SizedBox(height: 8),
+          Text(
+            'Tagged account: $_taggedAccountLabel',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          ),
+        ],
+        const SizedBox(height: 6),
+        Text(
+          'Assigned accounts (OwnerId portfolio): Normal ${tiers.normal}, '
+          'VIP ${tiers.vip}, VVIP ${tiers.vvip}',
+          style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+        ),
+        const SizedBox(height: 10),
+        _buildInternalQuotesBookingsPie(),
+        const SizedBox(height: 10),
+        _topReachRout(internalMode: true),
+        const SizedBox(height: 20),
+      ],
+    );
+  }
+
+  static const _pieDraftLight = Color(0xFFBBDEFB);
+  static const _pieAcceptedLight = Color(0xFFC8E6C9);
+  static const _pieBookedLight = Color(0xFFFFE0B2);
+
+  Widget _buildInternalQuotesBookingsPie() {
+    final draft = _internalStats.openQuoteCount.toDouble();
+    final accepted = _internalStats.acceptedQuoteCount.toDouble();
+    final booked = _internalStats.orderCount.toDouble();
+    final total = draft + accepted + booked;
+    final loading = _internalLoading;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE4E7EC)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Portfolio activity',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            'Draft & accepted quotes and booked orders (your accounts)',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 20),
+          loading
+              ? const SizedBox(
+                height: 200,
+                child: Center(child: CircularProgressIndicator()),
+              )
+              : SizedBox(
+                height: 200,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    PieChart(
+                      PieChartData(
+                        centerSpaceRadius: 50,
+                        sectionsSpace: 2,
+                        sections:
+                            total <= 0
+                                ? [
+                                  PieChartSectionData(
+                                    color: AppColors.lightGrey,
+                                    value: 1,
+                                    title: '',
+                                    radius: 50,
+                                  ),
+                                ]
+                                : [
+                                  PieChartSectionData(
+                                    color: _pieDraftLight,
+                                    value: draft == 0 ? 0.0001 : draft,
+                                    title: '',
+                                    radius: 50,
+                                  ),
+                                  PieChartSectionData(
+                                    color: _pieAcceptedLight,
+                                    value: accepted == 0 ? 0.0001 : accepted,
+                                    title: '',
+                                    radius: 50,
+                                  ),
+                                  PieChartSectionData(
+                                    color: _pieBookedLight,
+                                    value: booked == 0 ? 0.0001 : booked,
+                                    title: '',
+                                    radius: 50,
+                                  ),
+                                ],
+                      ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _formatCount(total.toInt(), loading: loading),
+                          style: const TextStyle(
+                            fontSize: 23,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+          const SizedBox(height: 20),
+          Center(
+            child: Wrap(
+              spacing: 20,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                _reachLegend(
+                  'Draft quotes',
+                  _formatCount(_internalStats.openQuoteCount, loading: loading),
+                  _pieDraftLight,
+                ),
+                _reachLegend(
+                  'Accepted quotes',
+                  _formatCount(
+                    _internalStats.acceptedQuoteCount,
+                    loading: loading,
+                  ),
+                  _pieAcceptedLight,
+                ),
+                _reachLegend(
+                  'Booked',
+                  _formatCount(_internalStats.orderCount, loading: loading),
+                  _pieBookedLight,
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -339,7 +585,9 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
       'Scheduled': AppColors.orange,
     };
 
-    final bookingCounts = AdminBookingCountsService.orderedCounts(_bookingCounts);
+    final bookingCounts = AdminBookingCountsService.orderedCounts(
+      _bookingCounts,
+    );
     final pieSlices = AdminBookingCountsService.pieSliceValues(bookingCounts);
     final total = AdminBookingCountsService.totalOf(bookingCounts);
 
@@ -373,20 +621,21 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
           const SizedBox(height: 20),
           isBookingLoading
               ? const SizedBox(
-                  height: 200,
-                  child: Center(child: CircularProgressIndicator()),
-                )
+                height: 200,
+                child: Center(child: CircularProgressIndicator()),
+              )
               : SizedBox(
-                  height: 200,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      PieChart(
-                        PieChartData(
-                          sectionsSpace: 2,
-                          centerSpaceRadius: 60,
-                          sections: pieSlices.isEmpty
-                              ? [
+                height: 200,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    PieChart(
+                      PieChartData(
+                        sectionsSpace: 2,
+                        centerSpaceRadius: 60,
+                        sections:
+                            pieSlices.isEmpty
+                                ? [
                                   PieChartSectionData(
                                     color: AppColors.lightGrey,
                                     value: 1,
@@ -394,7 +643,7 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
                                     radius: 50,
                                   ),
                                 ]
-                              : pieSlices.map((entry) {
+                                : pieSlices.map((entry) {
                                   return PieChartSectionData(
                                     color: colorMap[entry.key],
                                     value: entry.value,
@@ -402,37 +651,38 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
                                     radius: 50,
                                   );
                                 }).toList(),
+                      ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _formatCount(total, loading: isBookingLoading),
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            _formatCount(total, loading: isBookingLoading),
-                            style: const TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const Text(
-                            'Bookings',
-                            style: TextStyle(color: Colors.grey, fontSize: 13),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+                        const Text(
+                          'Bookings',
+                          style: TextStyle(color: Colors.grey, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
+              ),
           const SizedBox(height: 20),
           Wrap(
             spacing: 20,
             runSpacing: 8,
-            children: bookingCounts.entries.map((entry) {
-              return _legend(
-                '${entry.key} (${entry.value})',
-                colorMap[entry.key]!,
-              );
-            }).toList(),
+            children:
+                bookingCounts.entries.map((entry) {
+                  return _legend(
+                    '${entry.key} (${entry.value})',
+                    colorMap[entry.key]!,
+                  );
+                }).toList(),
           ),
         ],
       ),
@@ -442,13 +692,16 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
   // ─────────────────────────────────────────
   // TOP REACHED ROUTES CARD
   // ─────────────────────────────────────────
-  Widget _topReachRout() {
-    // Max count for bar width calculation
-    final maxCount = routeData.isEmpty
-        ? 1
-        : routeData
-        .map((e) => e['count'] as int)
-        .reduce((a, b) => a > b ? a : b);
+  Widget _topReachRout({bool internalMode = false}) {
+    final rows = internalMode ? _internalRouteData : routeData;
+    final routeLoading = internalMode ? _internalLoading : isRouteLoading;
+
+    final maxCount =
+        !internalMode && rows.isNotEmpty
+            ? rows
+                .map((e) => e['count'] as int)
+                .reduce((a, b) => a > b ? a : b)
+            : 1;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -463,9 +716,9 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
-                "Top Reached Routes",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              Text(
+                internalMode ? 'Top Search Routes' : 'Top Reached Routes',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
               ),
               // SizedBox(
               //   width: 120,
@@ -477,71 +730,139 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
               // ),
             ],
           ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _portPickerField(
-                  hint: 'Origin',
-                  value: _selectedOrigin,
-                  onTap: () => _openPortPicker(isOrigin: true),
+          if (!internalMode) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _portPickerField(
+                    hint: 'Origin',
+                    value: _selectedOrigin,
+                    onTap: () => _openPortPicker(isOrigin: true),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _portPickerField(
-                  hint: 'Destination',
-                  value: _selectedDestination,
-                  onTap: () => _openPortPicker(isOrigin: false),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _portPickerField(
+                    hint: 'Destination',
+                    value: _selectedDestination,
+                    onTap: () => _openPortPicker(isOrigin: false),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.main,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 10),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.main,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onPressed:
+                      () => _fetchRouteReports(
+                        origin: _selectedOrigin,
+                        destination: _selectedDestination,
+                      ),
+                  child: const Text(
+                    'Search',
+                    style: TextStyle(color: Colors.white, fontSize: 13),
+                  ),
                 ),
-                onPressed: () => _fetchRouteReports(
-                  origin: _selectedOrigin,
-                  destination: _selectedDestination,
-                ),
-                child: const Text(
-                  'Search',
-                  style: TextStyle(color: Colors.white, fontSize: 13),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          isRouteLoading
-              ? const SizedBox(
-            height: 100,
-            child: Center(child: CircularProgressIndicator()),
-          )
-              : routeData.isEmpty
-              ? const Center(
-            child: Padding(
-              padding: EdgeInsets.symmetric(vertical: 30),
-              child: Text(
-                "No route data available",
-                style: TextStyle(color: Colors.grey),
-              ),
+              ],
             ),
-          )
+          ],
+          SizedBox(height: internalMode ? 12 : 16),
+          routeLoading
+              ? const SizedBox(
+                height: 100,
+                child: Center(child: CircularProgressIndicator()),
+              )
+              : rows.isEmpty
+              ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 30),
+                  child: Text(
+                    internalMode
+                        ? 'No top search rates for your accounts yet'
+                        : 'No route data available',
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                ),
+              )
               : Column(
-            children: routeData
-                .take(7) // show top 7
-                .map((route) {
-              final count = route['count'] as int;
-              final label = route['label'] as String;
-              final percent =
-              (count / maxCount * 100).clamp(0, 100).toDouble();
-              return _routeBar(label, percent, count);
-            })
-                .toList(),
+                children:
+                    (internalMode ? rows : rows.take(7))
+                        .map((route) {
+                          final count = route['count'] as int;
+                          final label = route['label'] as String;
+                          if (internalMode) {
+                            return _internalSearchRouteRow(label, count);
+                          }
+                          final percent =
+                              (count / maxCount * 100).clamp(0, 100).toDouble();
+                          return _routeBar(label, percent, count);
+                        })
+                        .toList(),
+              ),
+        ],
+      ),
+    );
+  }
+
+  Widget _internalSearchRouteRow(String label, int count) {
+    final arrow = ' → ';
+    final idx = label.indexOf(arrow);
+    final origin =
+        idx >= 0 ? label.substring(0, idx).trim() : label.trim();
+    final destination =
+        idx >= 0 ? label.substring(idx + arrow.length).trim() : '';
+
+    final routeTextStyle = TextStyle(
+      fontSize: 13,
+      color: Colors.grey.shade800,
+      fontWeight: FontWeight.w500,
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child:
+                destination.isEmpty
+                    ? Text(
+                      origin,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: routeTextStyle,
+                    )
+                    : Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 4,
+                      runSpacing: 2,
+                      children: [
+                        Text(origin, style: routeTextStyle),
+                        Icon(
+                          Icons.arrow_forward,
+                          size: 14,
+                          color: Colors.grey.shade500,
+                        ),
+                        Text(destination, style: routeTextStyle),
+                      ],
+                    ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            count.toString(),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey.shade700,
+            ),
           ),
         ],
       ),
@@ -624,13 +945,16 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(title,
-                  style: const TextStyle(
-                      fontSize: 14, color: Colors.black87)),
+              Text(
+                title,
+                style: const TextStyle(fontSize: 14, color: Colors.black87),
+              ),
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                    color: iconBgColor, shape: BoxShape.circle),
+                  color: iconBgColor,
+                  shape: BoxShape.circle,
+                ),
                 child: Icon(icon, size: 22, color: iconColor),
               ),
             ],
@@ -638,10 +962,7 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
           const SizedBox(height: 10),
           Text(
             value,
-            style: const TextStyle(
-              fontSize: 26,
-              fontWeight: FontWeight.bold,
-            ),
+            style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
           ),
         ],
       ),
@@ -688,51 +1009,51 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
           const SizedBox(height: 20),
           isUserCountLoading
               ? const SizedBox(
-                  height: 200,
-                  child: Center(child: CircularProgressIndicator()),
-                )
+                height: 200,
+                child: Center(child: CircularProgressIndicator()),
+              )
               : SizedBox(
-                  height: 200,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      PieChart(
-                        PieChartData(
-                          centerSpaceRadius: 50,
-                          sections: [
-                            PieChartSectionData(
-                              color: AppColors.main,
-                              value: newCount == 0 ? 0.0001 : newCount,
-                              title: '',
-                              radius: 50,
-                            ),
-                            PieChartSectionData(
-                              color: AppColors.greyBlue,
-                              value: repeatCount == 0 ? 0.0001 : repeatCount,
-                              title: '',
-                              radius: 50,
-                            ),
-                          ],
-                        ),
-                      ),
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            _formatCount(
-                              centerTotal,
-                              loading: isUserCountLoading,
-                            ),
-                            style: const TextStyle(
-                              fontSize: 23,
-                              fontWeight: FontWeight.w600,
-                            ),
+                height: 200,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    PieChart(
+                      PieChartData(
+                        centerSpaceRadius: 50,
+                        sections: [
+                          PieChartSectionData(
+                            color: AppColors.main,
+                            value: newCount == 0 ? 0.0001 : newCount,
+                            title: '',
+                            radius: 50,
+                          ),
+                          PieChartSectionData(
+                            color: AppColors.greyBlue,
+                            value: repeatCount == 0 ? 0.0001 : repeatCount,
+                            title: '',
+                            radius: 50,
                           ),
                         ],
                       ),
-                    ],
-                  ),
+                    ),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _formatCount(
+                            centerTotal,
+                            loading: isUserCountLoading,
+                          ),
+                          style: const TextStyle(
+                            fontSize: 23,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
+              ),
           const SizedBox(height: 20),
           Center(
             child: Wrap(
@@ -768,17 +1089,20 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(value,
-            style: const TextStyle(color: Colors.black54, fontSize: 20)),
+        Text(
+          value,
+          style: const TextStyle(color: Colors.black54, fontSize: 20),
+        ),
         const SizedBox(width: 6),
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             CircleAvatar(radius: 6, backgroundColor: color),
             const SizedBox(width: 6),
-            Text(title,
-                style: const TextStyle(
-                    color: Colors.black54, fontSize: 12)),
+            Text(
+              title,
+              style: const TextStyle(color: Colors.black54, fontSize: 12),
+            ),
           ],
         ),
       ],
@@ -791,8 +1115,10 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
       children: [
         CircleAvatar(radius: 6, backgroundColor: color),
         const SizedBox(width: 6),
-        Text(title,
-            style: const TextStyle(color: Colors.black54, fontSize: 12)),
+        Text(
+          title,
+          style: const TextStyle(color: Colors.black54, fontSize: 12),
+        ),
       ],
     );
   }
@@ -826,7 +1152,11 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            const Icon(Icons.keyboard_arrow_down_rounded, size: 18, color: Colors.grey),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 18,
+              color: Colors.grey,
+            ),
           ],
         ),
       ),
@@ -838,18 +1168,19 @@ class _AnalyticsReportScreenState extends State<AnalyticsReportScreen> {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => _PortPickerSheet(
-        ports: _allPorts,
-        onSelected: (portName) {
-          setState(() {
-            if (isOrigin) {
-              _selectedOrigin = portName;
-            } else {
-              _selectedDestination = portName;
-            }
-          });
-        },
-      ),
+      builder:
+          (_) => _PortPickerSheet(
+            ports: _allPorts,
+            onSelected: (portName) {
+              setState(() {
+                if (isOrigin) {
+                  _selectedOrigin = portName;
+                } else {
+                  _selectedDestination = portName;
+                }
+              });
+            },
+          ),
     );
   }
 }
@@ -886,11 +1217,12 @@ class _PortPickerSheetState extends State<_PortPickerSheet> {
   void _onSearch(String query) {
     final q = query.toLowerCase().trim();
     setState(() {
-      _filtered = q.isEmpty
-          ? widget.ports
-          : widget.ports
-              .where((p) => (p.name ?? '').toLowerCase().contains(q))
-              .toList();
+      _filtered =
+          q.isEmpty
+              ? widget.ports
+              : widget.ports
+                  .where((p) => (p.name ?? '').toLowerCase().contains(q))
+                  .toList();
     });
   }
 
@@ -943,19 +1275,27 @@ class _PortPickerSheetState extends State<_PortPickerSheet> {
               decoration: InputDecoration(
                 hintText: 'Search port...',
                 hintStyle: TextStyle(color: Colors.grey.shade400, fontSize: 13),
-                prefixIcon: Icon(Icons.search, color: Colors.grey.shade400, size: 20),
-                suffixIcon: _searchCtrl.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.clear, size: 18),
-                        onPressed: () {
-                          _searchCtrl.clear();
-                          _onSearch('');
-                        },
-                      )
-                    : null,
+                prefixIcon: Icon(
+                  Icons.search,
+                  color: Colors.grey.shade400,
+                  size: 20,
+                ),
+                suffixIcon:
+                    _searchCtrl.text.isNotEmpty
+                        ? IconButton(
+                          icon: const Icon(Icons.clear, size: 18),
+                          onPressed: () {
+                            _searchCtrl.clear();
+                            _onSearch('');
+                          },
+                        )
+                        : null,
                 filled: true,
                 fillColor: Colors.grey.shade50,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                   borderSide: BorderSide(color: Colors.grey.shade200),
@@ -966,7 +1306,10 @@ class _PortPickerSheetState extends State<_PortPickerSheet> {
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: AppColors.main, width: 1.5),
+                  borderSide: const BorderSide(
+                    color: AppColors.main,
+                    width: 1.5,
+                  ),
                 ),
               ),
             ),
@@ -977,39 +1320,55 @@ class _PortPickerSheetState extends State<_PortPickerSheet> {
 
           // List
           Expanded(
-            child: _filtered.isEmpty
-                ? Center(
-                    child: Text(
-                      'No ports found',
-                      style: TextStyle(color: Colors.grey.shade500),
+            child:
+                _filtered.isEmpty
+                    ? Center(
+                      child: Text(
+                        'No ports found',
+                        style: TextStyle(color: Colors.grey.shade500),
+                      ),
+                    )
+                    : ListView.separated(
+                      padding: const EdgeInsets.only(bottom: 24),
+                      itemCount: _filtered.length,
+                      separatorBuilder:
+                          (_, __) => const Divider(
+                            height: 1,
+                            indent: 16,
+                            endIndent: 16,
+                          ),
+                      itemBuilder: (_, i) {
+                        final port = _filtered[i];
+                        final name = port.name ?? '';
+                        return ListTile(
+                          title: Text(
+                            name,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                          subtitle:
+                              port.country != null
+                                  ? Text(
+                                    port.country!,
+                                    style: const TextStyle(fontSize: 11),
+                                  )
+                                  : null,
+                          trailing: const Icon(
+                            Icons.chevron_right,
+                            color: Colors.grey,
+                            size: 18,
+                          ),
+                          dense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 2,
+                          ),
+                          onTap: () {
+                            widget.onSelected(name);
+                            Navigator.pop(context);
+                          },
+                        );
+                      },
                     ),
-                  )
-                : ListView.separated(
-                    padding: const EdgeInsets.only(bottom: 24),
-                    itemCount: _filtered.length,
-                    separatorBuilder: (_, __) =>
-                        const Divider(height: 1, indent: 16, endIndent: 16),
-                    itemBuilder: (_, i) {
-                      final port = _filtered[i];
-                      final name = port.name ?? '';
-                      return ListTile(
-                        title: Text(
-                          name,
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                        subtitle: port.country != null
-                            ? Text(port.country!, style: const TextStyle(fontSize: 11))
-                            : null,
-                        trailing: const Icon(Icons.chevron_right, color: Colors.grey, size: 18),
-                        dense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                        onTap: () {
-                          widget.onSelected(name);
-                          Navigator.pop(context);
-                        },
-                      );
-                    },
-                  ),
           ),
         ],
       ),

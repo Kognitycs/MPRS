@@ -66,6 +66,9 @@ class ApiConstants {
   static String get changePassword => '$baseUrl/auth/change-password';
   static String get deleteAccount => '$baseUrl/auth/account';
 
+  static String salespersonsByState(String state) =>
+      '$baseUrl/auth/salespersons?state=${Uri.encodeQueryComponent(state.trim())}';
+
   // Template
   static String get createNotificationTemplate =>
       '$baseUrl/admin/create/notification-template';
@@ -206,6 +209,20 @@ class ApiConstants {
   /// Salesforce accounts for the logged-in internal user's salesperson (OwnerId).
   static String get opportunityAccounts => '$baseUrl/user/opportunity/accounts';
 
+  /// Account rows owned by Salesforce User Id (005…).
+  static String salesforceAccountsByOwnerId(String ownerId) {
+    final id = ownerId.trim();
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+Id,Name+FROM+Account+WHERE+OwnerId=\'$id\'+ORDER+BY+Name';
+  }
+
+  /// Single Account by Salesforce Id (001…).
+  static String salesforceAccountById(String accountId) {
+    final id = accountId.trim();
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+Id,Name+FROM+Account+WHERE+Id=\'$id\'+LIMIT+1';
+  }
+
   /// User quotes — omit [accountId] for admin (all users).
   static String userQuotes({String? accountId}) {
     final id = accountId?.trim() ?? '';
@@ -220,7 +237,7 @@ class ApiConstants {
       'CreatedDate,Origin_Port__r.Name,Destination_Port__r.Name,'
       'Lead_Type__c,Goods_Value__c,Net_Weight_KGS__c,Gross_Weight_KGS__c,'
       '$quoteContainerSelectFields,'
-      'Opportunity.Name,Opportunity.Opp_From_RMS_App__c,Account.Name '
+      'Opportunity.Name,Opportunity.Opp_From_RMS_App__c,Account.Name,AccountId '
       'FROM+Quote+WHERE+Opportunity.Opp_From_RMS_App__c=true '
       'ORDER+BY+CreatedDate+DESC';
 
@@ -247,7 +264,7 @@ class ApiConstants {
       'CreatedDate,Origin_Port__r.Name,Destination_Port__r.Name,'
       'Lead_Type__c,Goods_Value__c,Net_Weight_KGS__c,Gross_Weight_KGS__c,'
       '$quoteContainerSelectFields,'
-      'Opportunity.Name,Opportunity.Opp_From_RMS_App__c,Account.Name '
+      'Opportunity.Name,Opportunity.Opp_From_RMS_App__c,Account.Name,AccountId '
       'FROM+Quote+ORDER+BY+CreatedDate+DESC';
 
   /// Opportunities created from the app. One query feeds both the total
@@ -294,21 +311,21 @@ class ApiConstants {
         'SELECT+Id,Name,Status,ExpirationDate,TotalPrice,GrandTotal,CurrencyIsoCode,'
         'Created_Date__c,Origin_Port__r.Name,Destination_Port__r.Name,'
         'Lead_Type__c,Goods_Value__c,Net_Weight_KGS__c,Gross_Weight_KGS__c,'
-        '$quoteContainerSelectFields,Mode_of_Shipment__c '
+        '$quoteContainerSelectFields'
         "+FROM+Quote+WHERE+Id='$quoteId'";
   }
 
   /// Container type/size on Quote header.
   static String getQuoteContainerFieldsById(String quoteId) {
     return '$baseUrl/user/getData?sfQuery='
-        'SELECT+Id,$quoteContainerSelectFields,Lead_Type__c,Mode_of_Shipment__c '
+        'SELECT+Id,$quoteContainerSelectFields,Lead_Type__c'
         "+FROM+Quote+WHERE+Id='$quoteId'";
   }
 
   /// Container size/type from ocean-freight pricebook entry.
   static String getPricebookEntryContainerFieldsById(String pricebookEntryId) {
     return '$baseUrl/user/getData?sfQuery='
-        'SELECT+Id,$quoteContainerSelectFields,Name '
+        'SELECT+Id,$quoteContainerSelectFields,Name'
         "+FROM+PricebookEntry+WHERE+Id='$pricebookEntryId'";
   }
 

@@ -33,4 +33,54 @@ class UserCache {
   static void setIsLoading(String userType, bool isLoading) {
     userTypeIsLoading[userType] = isLoading;
   }
+
+  /// When list rows omit `accountId`, use tag stored after add-user / edit tag.
+  static final Map<String, String> _accountIdByUserKey = {};
+
+  static void rememberAccountTag({
+    String? userId,
+    String? mongoId,
+    required String accountId,
+  }) {
+    final tag = accountId.trim();
+    if (tag.isEmpty) return;
+    for (final key in [userId, mongoId]) {
+      final k = key?.trim();
+      if (k != null && k.isNotEmpty) {
+        _accountIdByUserKey[k] = tag;
+      }
+    }
+    _patchListsWithAccountId(userId, mongoId, tag);
+  }
+
+  static String? localAccountId({String? userId, String? mongoId}) {
+    for (final key in [userId, mongoId]) {
+      final k = key?.trim();
+      if (k == null || k.isEmpty) continue;
+      final found = _accountIdByUserKey[k];
+      if (found != null && found.isNotEmpty) return found;
+    }
+    return null;
+  }
+
+  static void _patchListsWithAccountId(
+    String? userId,
+    String? mongoId,
+    String accountId,
+  ) {
+    for (final notifier in _userTypeNotifiers.values) {
+      final updated = notifier.value.map((u) {
+        final matches =
+            (userId != null &&
+                userId.isNotEmpty &&
+                (u.userId?.trim() == userId || u.id?.trim() == userId)) ||
+            (mongoId != null &&
+                mongoId.isNotEmpty &&
+                (u.userId?.trim() == mongoId || u.id?.trim() == mongoId));
+        if (!matches) return u;
+        return u.copyWith(accountId: accountId);
+      }).toList();
+      notifier.value = updated;
+    }
+  }
 }

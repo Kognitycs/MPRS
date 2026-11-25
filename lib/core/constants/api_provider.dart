@@ -20,13 +20,16 @@ import '../../model/quote_line_details_result.dart';
 import '../../model/notification_item.dart';
 import '../../model/notifications_response.dart';
 import '../../model/saved_quotations_model.dart';
+import '../utils/api_error_utils.dart';
 import '../utils/progress_dialog.dart';
 import 'api_constants.dart';
 import 'base_client.dart';
 import 'data_response.dart';
 import '../../service/http_client_helper.dart';
+import '../../service/sales_account_directory.dart';
 import '../../service/reserved_quote_store.dart';
 import '../../service/fcm_token_service.dart';
+import '../../core/database/notification_db.dart';
 import '../../service/notification/notification_inbox_store.dart';
 import '../../service/notification/notification_poll_service.dart';
 
@@ -72,8 +75,19 @@ class ApiProvider {
   static final ApiProvider _singleton = ApiProvider._internal();
   late BaseClient _baseClient;
 
+  List<SavedQuotationsModel>? _appCreatedQuotesCache;
+  DateTime? _appCreatedQuotesCachedAt;
+  Future<List<SavedQuotationsModel>>? _appCreatedQuotesInFlight;
+  static const _appCreatedQuotesTtl = Duration(seconds: 90);
+
   /// Set after each document fetch for debug (backend vs UI).
   static OrderDocumentsFetchStats? lastDocumentStats;
+
+  void clearAppCreatedQuotesCache() {
+    _appCreatedQuotesCache = null;
+    _appCreatedQuotesCachedAt = null;
+    _appCreatedQuotesInFlight = null;
+  }
 
   factory ApiProvider() {
     return _singleton;
@@ -93,6 +107,11 @@ class ApiProvider {
     if (fromDb.isNotEmpty) return fromDb;
     return AuthDataHelper.getAccountId().trim();
   }
+
+  /// Admin + Internal call `user/quote` without account_id; Internal rows are
+  /// filtered to OwnerId portfolio accounts after fetch.
+  bool _usesPortfolioQuoteListing() =>
+      AuthDataHelper.isAdminUser() || AuthDataHelper.isInternalUser();
 
   /// ------------------------- Auth apis ------------------------------------
 
@@ -116,15 +135,15 @@ class ApiProvider {
       if (res != null) {
         return DataResponse.fromJson(res.data, (data) => null);
       }
-      return DataResponse(message: e.toString());
+      return DataResponse(message: userFacingErrorMessage());
     }
   }
 
   /// Inbox for External / VIP / VVIP (admin-pushed, filtered by role).
   /// Fetch notification inbox from the server.
   ///
-  /// • Admin / Internal  → admin/get/allNotifications
-  /// • External / VIP / VVIP → FCM delivery + local SQLite only (user API 404)
+  /// • Admin → admin/get/allNotifications
+  /// • External / VIP / VVIP / Internal → FCM delivery + local SQLite only
   // API keys required by the server — included in every notification request
   // so the server can authenticate the service call regardless of JWT role.
   static Map<String, String> get _notifApiKeys => {
@@ -139,16 +158,13 @@ class ApiProvider {
     final token = AuthDataHelper.getToken();
     if (token.isEmpty) return [];
 
-    final isPrivileged =
-        AuthDataHelper.isAdminUser() || AuthDataHelper.isInternalUser();
-
     debugPrint('🔔 Inbox fetch: userType=$userType');
 
-    if (isPrivileged) {
+    if (AuthDataHelper.isAdminUser()) {
       return _tryInboxUrl(ApiConstants.getAllNotifications, token, userType);
     }
 
-    // External / VIP / VVIP — inbox comes from FCM → SQLite (user API returns 404).
+    // Non-admin — inbox comes from FCM → SQLite (user API returns 404).
     debugPrint('🔔 Inbox fetch skipped for $userType — FCM local cache only');
     return [];
   }
@@ -331,27 +347,30 @@ class ApiProvider {
 
   Future<DataResponse<List<SavedQuotationsModel>>> savedQuotations() async {
     final isAdmin = AuthDataHelper.isAdminUser();
+    final isInternal = AuthDataHelper.isInternalUser();
+    final portfolioList = _usesPortfolioQuoteListing();
     final accountId = _accountId();
 
-    if (!isAdmin && accountId.isEmpty) {
-      // Internal users are sales people and are not linked to one account.
-      if (AuthDataHelper.getUserType().toLowerCase().trim() == 'internal') {
-        return DataResponse(success: true, message: '', body: []);
-      }
-      return DataResponse(
-        message: 'Account id is required',
-        success: false,
-        body: [],
-      );
+    if (!portfolioList && accountId.isEmpty) {
+      // No customer account on profile — empty list without surfacing an error overlay.
+      return DataResponse(success: true, message: '', body: []);
     }
 
-    final url = ApiConstants.userQuotes(accountId: isAdmin ? null : accountId);
+    final url = ApiConstants.userQuotes(accountId: portfolioList ? null : accountId);
 
     ApiRequest apiRequest = ApiRequest(url: url, method: DioMethod.get);
 
-    debugPrint('🚀 user/quote ${isAdmin ? "(admin — all users)" : ""}: $url');
+    debugPrint(
+      '🚀 user/quote ${portfolioList ? "(portfolio — admin/internal)" : ""}: $url',
+    );
 
     try {
+      if (isInternal) {
+        final quotes = await fetchRmsAppQuotationsForRole();
+        debugPrint('✅ Internal quotations: ${quotes.length} quotes (portfolio)');
+        return DataResponse(success: true, message: '', body: quotes);
+      }
+
       var response = await _baseClient.handleRequest(apiRequest);
       debugPrint('✅ user/quote RESPONSE RECEIVED');
 
@@ -375,33 +394,64 @@ class ApiProvider {
       }
 
       final status = response is Map ? response['status'] : null;
+      final ok =
+          status == 200 ||
+          status == true ||
+          status == '200' ||
+          quotes.isNotEmpty;
       return DataResponse(
-        success: status == 200 || status == true || quotes.isNotEmpty,
+        success: ok || quotes.isEmpty,
         code: status is int ? status : null,
         message: response is Map ? response['message']?.toString() : null,
         body: quotes,
       );
     } catch (e) {
       debugPrint('❌ API PROVIDER ERROR: $e');
-      return DataResponse(message: e.toString(), success: false, body: []);
+      return DataResponse(message: userFacingErrorMessage(), success: false, body: []);
     }
   }
 
   /// All users: quotations whose Opportunity was created from the RMS app.
   Future<List<SavedQuotationsModel>> fetchAdminAppCreatedQuotations() async {
-    final sfRms = await _fetchAdminRmsQuotesFromSf();
-    final appQuotes = await _fetchAllUsersQuotesFromApi();
+    final cachedAt = _appCreatedQuotesCachedAt;
+    final cached = _appCreatedQuotesCache;
+    if (cached != null &&
+        cachedAt != null &&
+        DateTime.now().difference(cachedAt) < _appCreatedQuotesTtl) {
+      return cached;
+    }
+
+    final inFlight = _appCreatedQuotesInFlight;
+    if (inFlight != null) return inFlight;
+
+    final request = _fetchAdminAppCreatedQuotationsUncached();
+    _appCreatedQuotesInFlight = request;
+  try {
+    return await request;
+  } finally {
+    if (identical(_appCreatedQuotesInFlight, request)) {
+      _appCreatedQuotesInFlight = null;
+    }
+  }
+  }
+
+  Future<List<SavedQuotationsModel>>
+  _fetchAdminAppCreatedQuotationsUncached() async {
+    final mergedLists = await Future.wait([
+      _fetchAdminRmsQuotesFromSf(),
+      _fetchAllUsersQuotesFromApi(),
+    ]);
+    final sfRms = mergedLists[0];
+    final appQuotes = mergedLists[1];
 
     final byId = <String, SavedQuotationsModel>{};
 
-    // SF list = source of truth (all accounts, Opp_From_RMS_App__c = true).
     for (final quote in sfRms) {
       final id = quote.id?.trim();
       if (id == null || id.isEmpty) continue;
       byId[id] = quote.asAppOpportunityQuote();
     }
 
-    // user/quote (all users): include any row with RMS flag; enrich SF rows.
     for (final quote in appQuotes) {
       final id = quote.id?.trim();
       if (id == null || id.isEmpty) continue;
@@ -420,7 +470,24 @@ class ApiProvider {
       '(SF RMS=${sfRms.length}, user/quote all users=${appQuotes.length}, '
       'excl. QT test)',
     );
+    _appCreatedQuotesCache = result;
+    _appCreatedQuotesCachedAt = DateTime.now();
     return result;
+  }
+
+  /// RMS opportunities from the app — all accounts for Admin, OwnerId portfolio
+  /// for Internal.
+  Future<List<SavedQuotationsModel>> fetchRmsAppQuotationsForRole({
+    Set<String>? portfolioIds,
+  }) async {
+    final all = await fetchAdminAppCreatedQuotations();
+    if (AuthDataHelper.isAdminUser()) return all;
+    if (AuthDataHelper.isInternalUser()) {
+      final ids =
+          portfolioIds ?? await SalesAccountDirectory.portfolioAccountIdSet();
+      return SalesAccountDirectory.filterQuotesToPortfolio(all, ids);
+    }
+    return all;
   }
 
   /// Admin Booked tab: confirmed orders on RMS app opportunities only.
@@ -452,20 +519,36 @@ class ApiProvider {
   }
 
   /// Books → In Progress tab: same data as Shipments tab (Import + Export merged).
-  /// Admin sees all app-created quotations; other users see their own account only.
+  /// Admin: all RMS quotes; Internal: OwnerId portfolio; External: single account.
   Future<InProgressShipmentData> fetchInProgressShipmentData({
     bool accountScoped = false,
   }) async {
     if (AuthDataHelper.isAdminUser() && !accountScoped) {
-      return _fetchAdminInProgressShipmentData();
+      return _fetchRmsInProgressShipmentData();
+    }
+    if (AuthDataHelper.isInternalUser() && !accountScoped) {
+      return _fetchRmsInProgressShipmentData(
+        quotesSource: fetchRmsAppQuotationsForRole,
+        logLabel: 'Internal portfolio',
+      );
     }
     return _fetchUserInProgressShipmentData();
   }
 
-  Future<InProgressShipmentData> _fetchAdminInProgressShipmentData() async {
+  Future<InProgressShipmentData> _fetchRmsInProgressShipmentData({
+    Future<List<SavedQuotationsModel>> Function()? quotesSource,
+    List<SavedQuotationsModel> Function(List<SavedQuotationsModel>)? filter,
+    String logLabel = 'Admin',
+  }) async {
     final bookedQuoteIds = await _fetchBookedQuoteIds();
+    var merged = quotesSource != null
+        ? await quotesSource()
+        : await fetchAdminAppCreatedQuotations();
+    if (filter != null) {
+      merged = filter(merged);
+    }
     final quotes =
-        (await fetchAdminAppCreatedQuotations())
+        merged
             .where((q) => !q.isTestQuoteData)
             .where((q) => !q.isEmptyOpportunityShellQuote)
             .where((q) => q.shouldShowInQuotationsList)
@@ -498,7 +581,7 @@ class ApiProvider {
     );
 
     debugPrint(
-      '✅ Admin in-progress (shipments data): ${records.length} quotation(s)',
+      '✅ $logLabel in-progress (shipments data): ${records.length} quotation(s)',
     );
     return InProgressShipmentData(
       records: records,
@@ -1234,6 +1317,7 @@ class ApiProvider {
       DbHelper().clearAll();
       AuthDataHelper.clearAllData();
       NotificationInboxStore.instance.clearSession();
+      await NotificationDB.instance.clearInboxOnLogout();
       await FcmTokenService.clearOnLogout();
       await NotificationPollService.clearSeenOnLogout();
 
@@ -1243,7 +1327,7 @@ class ApiProvider {
       );
     } catch (e) {
       // ProgressLoader.hide(Get.context!);
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -1284,7 +1368,7 @@ class ApiProvider {
       );
     } catch (e) {
       debugPrint('❌ Error fetching bookings in Provider: $e');
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -1325,7 +1409,7 @@ class ApiProvider {
       );
     } catch (e) {
       debugPrint('❌ Error fetching bookings in Provider: $e');
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -1366,7 +1450,7 @@ class ApiProvider {
       );
     } catch (e) {
       debugPrint('❌ Error fetching bookings in Provider: $e');
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -1406,7 +1490,7 @@ class ApiProvider {
       );
     } catch (e) {
       debugPrint('❌ Error fetching bookings in Provider: $e');
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -1446,7 +1530,7 @@ class ApiProvider {
       );
     } catch (e) {
       debugPrint('❌ Error fetching bookings in Provider: $e');
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -1521,7 +1605,7 @@ class ApiProvider {
       return DataResponse(message: message, success: false, body: []);
     } catch (e) {
       debugPrint('❌ fetchOrderDocuments error: $e');
-      return DataResponse(message: e.toString(), success: false, body: []);
+      return DataResponse(message: userFacingErrorMessage(), success: false, body: []);
     }
   }
 
@@ -1592,22 +1676,19 @@ class ApiProvider {
 
       return DataResponse(
         success: false,
-        message: map?['message']?.toString() ?? 'Upload failed',
+        message: userFacingErrorMessage(),
         code: status is int ? status : null,
       );
     } on DioException catch (e) {
       final status = e.response?.statusCode;
-      final serverMsg =
-          _coerceResponseToMap(e.response?.data)?['message']?.toString();
       return DataResponse(
         success: false,
-        message:
-            serverMsg?.isNotEmpty == true ? serverMsg : _dioErrorMessage(e),
+        message: userFacingErrorMessage(),
         code: status,
       );
     } catch (e) {
       debugPrint('❌ uploadOrderDocument error: $e');
-      return DataResponse(message: e.toString(), success: false);
+      return DataResponse(message: userFacingErrorMessage(), success: false);
     }
   }
 
@@ -1979,11 +2060,7 @@ class ApiProvider {
   }
 
   String _dioErrorMessage(DioException e) {
-    final data = e.response?.data;
-    if (data is Map && data['message'] != null) {
-      return data['message'].toString();
-    }
-    return e.message ?? 'Failed to fetch order documents';
+    return userFacingErrorMessage();
   }
 
   void _logOrderDocumentsPayload(dynamic response) {
@@ -2162,7 +2239,7 @@ class ApiProvider {
       return DataResponse(message: message, success: false, body: []);
     } catch (e) {
       debugPrint('❌ fetchQuotePdfs error: $e');
-      return DataResponse(message: e.toString(), success: false, body: []);
+      return DataResponse(message: userFacingErrorMessage(), success: false, body: []);
     }
   }
 
@@ -2282,7 +2359,7 @@ class ApiProvider {
         return list.map((item) => BookingItem.fromJson(item)).toList();
       });
     } catch (e) {
-      return DataResponse(message: e.toString(), success: false, body: []);
+      return DataResponse(message: userFacingErrorMessage(), success: false, body: []);
     }
   }
 
@@ -2385,7 +2462,7 @@ class ApiProvider {
       );
     } catch (e) {
       debugPrint('❌ fetchQuoteHeader error: $e');
-      return DataResponse(message: e.toString(), success: false, body: header);
+      return DataResponse(message: userFacingErrorMessage(), success: false, body: header);
     }
   }
 
@@ -2595,7 +2672,7 @@ class ApiProvider {
     } catch (e) {
       debugPrint('❌ Quote line API error: $e');
       return DataResponse(
-        message: e.toString(),
+        message: userFacingErrorMessage(),
         success: false,
         body: QuoteLineDetailsResult(),
       );

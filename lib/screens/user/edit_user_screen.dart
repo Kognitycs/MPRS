@@ -10,16 +10,23 @@ import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/core/constants/api_constants.dart';
 import 'package:mprs_android/core/constants/app_colors.dart';
 import 'package:mprs_android/core/constants/app_strings.dart';
+import 'package:mprs_android/core/utils/api_error_utils.dart';
 import 'package:mprs_android/core/utils/country_utils.dart';
 import 'package:mprs_android/core/utils/loader.dart';
 import 'package:mprs_android/core/utils/network.dart';
 import 'package:mprs_android/core/utils/progress_dialog.dart';
 import 'package:mprs_android/core/utils/snackbar_util.dart';
 import 'package:mprs_android/core/utils/validation_utils.dart';
+import 'package:mprs_android/model/api_response.dart';
 import 'package:mprs_android/model/add_user_response.dart';
+import 'package:mprs_android/model/all_users_response.dart';
 import 'package:mprs_android/model/common/user_data.dart';
 import 'package:mprs_android/model/edit_user_response.dart';
+import 'package:mprs_android/screens/user/user_cache.dart';
+import 'package:mprs_android/service/admin_user_account_tag_service.dart';
 import 'package:mprs_android/service/http_client_helper.dart';
+import 'package:mprs_android/service/sales_account_directory.dart';
+import 'package:mprs_android/service/salesperson_directory.dart';
 import 'package:mprs_android/widget/common_appbar.dart';
 import 'package:mprs_android/widget/common_fields.dart';
 import 'package:mprs_android/widget/custom_buttons.dart';
@@ -50,6 +57,10 @@ class _EditUserScreenState extends State<EditUserScreen> {
   final TextEditingController departmentController = TextEditingController();
   final TextEditingController mobileNumberController = TextEditingController();
   final TextEditingController companyNameController = TextEditingController();
+  final TextEditingController branchNameController = TextEditingController();
+  final TextEditingController streetController = TextEditingController();
+  final TextEditingController cityController = TextEditingController();
+  final TextEditingController postalCodeController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
   final TextEditingController confirmPasswordController =
       TextEditingController();
@@ -70,37 +81,269 @@ class _EditUserScreenState extends State<EditUserScreen> {
 
   final countries = CountryUtils.getAllCountries();
   final region = CountryUtils.getRegion();
+  final indianStates = CountryUtils.getIndianStates();
+
+  static const List<String> _accountTypeOptions = [
+    'Shipper',
+    'Agent/Forwarder',
+    'Consignee',
+    'Overseas Agent',
+  ];
+
+  String? _selectedAccountType;
+  String? _salespersonState;
+  String? _selectedSalespersonId;
+  String? _storedSalespersonName;
+  List<SalespersonOption> _salespersons = [];
+  bool _salespersonsLoading = false;
 
   String? userRoleType = "External";
   String? userRoleTypeError;
   File? _pickedImage;
 
+  List<SalesAccountChoice> _sfAccounts = [];
+  bool _sfAccountsLoading = false;
+  String? _taggedSalesforceAccountId;
+  String? _initialTaggedAccountId;
+  String? _taggedAccountDisplayName;
+  String? _sfAccountsError;
+  bool _taggedAccountHydrating = false;
+
+  bool get _isExternalFamily {
+    final role = (userRoleType ?? '').trim();
+    return role == 'External' || role == 'VIP' || role == 'VVIP';
+  }
+
   @override
   void initState() {
     super.initState();
     _initUserData();
+    if (_isExternalFamily) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await _hydrateUserFromAdminList();
+        final state = _salespersonState?.trim() ?? '';
+        if (state.isNotEmpty) {
+          await _loadSalespersons(state);
+        }
+      });
+    }
+    if (userRoleType == 'Internal') {
+      _taggedSalesforceAccountId = _accountIdFromUser(widget.user);
+      _initialTaggedAccountId = _taggedSalesforceAccountId;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await _hydrateTaggedAccountForSelectDropdown();
+        await _loadInternalOwnerAccounts(preserveTagIfMissingFromApi: true);
+      });
+    }
+  }
+
+  String? _accountIdFromUser(UserData? user) {
+    final id = user?.accountId?.trim() ?? '';
+    if (id.isEmpty) return null;
+    return id;
+  }
+
+  bool _sameSalesforceAccountId(String? a, String? b) {
+    final x = a?.trim().toLowerCase() ?? '';
+    final y = b?.trim().toLowerCase() ?? '';
+    if (x.isEmpty || y.isEmpty) return x == y;
+    if (x == y) return true;
+    final shortX = x.length >= 15 ? x.substring(0, 15) : x;
+    final shortY = y.length >= 15 ? y.substring(0, 15) : y;
+    return shortX == shortY;
+  }
+
+  Future<String?> _fetchAccountIdFromAdminList() async {
+    final token = AuthDataHelper.getToken().trim();
+    if (token.isEmpty) return null;
+
+    final targetUserId =
+        widget.user?.userId?.trim() ?? widget.user?.id?.trim() ?? '';
+    final email = widget.user?.email?.trim() ?? '';
+    final mobile = widget.user?.mobile?.trim() ?? '';
+
+    final queries = <String>[
+      if (email.isNotEmpty)
+        '${ApiConstants.allUsers}?page=1&limit=50&keyword=${Uri.encodeQueryComponent(email)}',
+      if (mobile.isNotEmpty)
+        '${ApiConstants.allUsers}?page=1&limit=50&keyword=${Uri.encodeQueryComponent(mobile)}',
+      if (targetUserId.isNotEmpty)
+        '${ApiConstants.allUsers}?page=1&limit=50&keyword=${Uri.encodeQueryComponent(targetUserId)}',
+    ];
+
+    for (final url in queries) {
+      try {
+        final response = await HttpClientHelper.getWithBearer(url, token);
+        if (response.statusCode < 200 || response.statusCode >= 300) continue;
+
+        final data = AllUsersResponse.fromJson(jsonDecode(response.data));
+        for (final row in data.data) {
+          final matches =
+              targetUserId.isNotEmpty
+                  ? (row.userId?.trim() == targetUserId ||
+                      row.id?.trim() == targetUserId)
+                  : (email.isNotEmpty &&
+                          row.email?.trim().toLowerCase() ==
+                              email.toLowerCase()) ||
+                      (mobile.isNotEmpty && row.mobile?.trim() == mobile);
+          if (matches) {
+            final found = _accountIdFromUser(row);
+            if (found != null) return found;
+          }
+        }
+      } catch (e) {
+        debugPrint('EditUser: fetch accountId: $e');
+      }
+    }
+    return null;
+  }
+
+  Future<void> _hydrateTaggedAccountForSelectDropdown() async {
+    if (userRoleType != 'Internal') return;
+
+    setState(() => _taggedAccountHydrating = true);
+
+    var id = _accountIdFromUser(widget.user) ?? _taggedSalesforceAccountId;
+    id ??= UserCache.localAccountId(
+      userId: widget.user?.userId,
+      mongoId: widget.user?.id,
+    );
+    id ??= await _fetchAccountIdFromAdminList();
+
+    if (!mounted) return;
+
+    if (id == null) {
+      setState(() {
+        _taggedSalesforceAccountId = null;
+        _taggedAccountDisplayName = null;
+        _taggedAccountHydrating = false;
+      });
+      return;
+    }
+
+    final accountId = id;
+    final name = await SalesAccountDirectory.resolveAccountDisplayName(
+      accountId,
+    );
+    if (!mounted) return;
+
+    setState(() {
+      _taggedSalesforceAccountId = accountId;
+      _initialTaggedAccountId ??= accountId;
+      _taggedAccountDisplayName = name;
+      _taggedAccountHydrating = false;
+      if (!_sfAccounts.any((c) => _sameSalesforceAccountId(c.id, accountId))) {
+        _sfAccounts = [
+          SalesAccountChoice(
+            id: accountId,
+            name: name.isEmpty ? 'Tagged account' : name,
+            fromApi: true,
+          ),
+          ..._sfAccounts,
+        ];
+      }
+    });
+
+    await _loadInternalOwnerAccounts(preserveTagIfMissingFromApi: true);
   }
 
   void _initUserData() {
-    print(widget.user);
-    final userData = widget.user!;
-    userNameController.text = userData.username ?? "";
-    firstNameController.text = userData.firstName ?? "";
-    lastNameController.text = userData.lastName ?? "";
-    designationController.text = userData.designation ?? "";
-    departmentController.text = userData.department ?? "";
-    emailController.text = userData.email ?? "";
-    alternateEmailController.text = userData.alternateEmail ?? "";
-    mobileNumberController.text = userData.mobile ?? "";
-    alternateMobileController.text = userData.alternateMobile ?? "";
-    gstinController.text = userData.gstin ?? "";
-    landlineNumberController.text = userData.landlineNumber ?? "";
-    extensionController.text = userData.extentionNumber ?? "";
-    addressController.text = userData.address ?? "";
-    companyNameController.text = userData.companyName ?? "";
-    selectedRegion = userData.region;
-    selectedCountry = userData.country;
-    userRoleType = userData.userType ?? "";
+    _applyUserToForm(widget.user!);
+  }
+
+  void _applyUserToForm(UserData userData) {
+    userNameController.text = userData.username ?? '';
+    firstNameController.text = userData.firstName ?? '';
+    lastNameController.text = userData.lastName ?? '';
+    designationController.text = userData.designation ?? '';
+    departmentController.text = userData.department ?? '';
+    emailController.text = userData.email ?? '';
+    alternateEmailController.text = userData.alternateEmail ?? '';
+    mobileNumberController.text = userData.mobile ?? '';
+    alternateMobileController.text = userData.alternateMobile ?? '';
+    gstinController.text = userData.gstin ?? '';
+    landlineNumberController.text = userData.landlineNumber ?? '';
+    extensionController.text = userData.extentionNumber ?? '';
+    companyNameController.text = userData.companyName ?? '';
+    userRoleType = userData.userType ?? '';
+
+    branchNameController.text = userData.branchName ?? '';
+    streetController.text =
+        (userData.street ?? '').trim().isNotEmpty
+            ? userData.street!.trim()
+            : (userData.address ?? '');
+    cityController.text = userData.city ?? '';
+    postalCodeController.text = userData.postalCode ?? '';
+    _selectedAccountType = userData.accountType;
+    _selectedSalespersonId = userData.salespersonId;
+    _storedSalespersonName = userData.salespersonName;
+    _salespersonState = CountryUtils.displayIndianStateName(
+      userData.state ?? userData.region,
+    );
+    selectedCountry = CountryUtils.displayCountryName(userData.country);
+
+    if (_isExternalFamily) {
+      addressController.text =
+          (userData.address ?? '').trim().isNotEmpty
+              ? userData.address!
+              : streetController.text;
+      selectedRegion = null;
+    } else {
+      addressController.text = userData.address ?? '';
+      selectedRegion = userData.region;
+      if (selectedCountry == null) {
+        selectedCountry = userData.country;
+      }
+    }
+  }
+
+  Future<void> _hydrateUserFromAdminList() async {
+    final token = AuthDataHelper.getToken().trim();
+    if (token.isEmpty) return;
+
+    final targetUserId =
+        widget.user?.userId?.trim() ?? widget.user?.id?.trim() ?? '';
+    final email = widget.user?.email?.trim() ?? '';
+    final mobile = widget.user?.mobile?.trim() ?? '';
+
+    final queries = <String>[
+      if (email.isNotEmpty)
+        '${ApiConstants.allUsers}?page=1&limit=50&keyword=${Uri.encodeQueryComponent(email)}',
+      if (mobile.isNotEmpty)
+        '${ApiConstants.allUsers}?page=1&limit=50&keyword=${Uri.encodeQueryComponent(mobile)}',
+      if (targetUserId.isNotEmpty)
+        '${ApiConstants.allUsers}?page=1&limit=50&keyword=${Uri.encodeQueryComponent(targetUserId)}',
+    ];
+
+    for (final url in queries) {
+      try {
+        final response = await HttpClientHelper.getWithBearer(url, token);
+        if (response.statusCode < 200 || response.statusCode >= 300) continue;
+
+        final data = AllUsersResponse.fromJson(jsonDecode(response.data));
+        for (final row in data.data) {
+          final matches =
+              targetUserId.isNotEmpty
+                  ? (row.userId?.trim() == targetUserId ||
+                      row.id?.trim() == targetUserId)
+                  : (email.isNotEmpty &&
+                          row.email?.trim().toLowerCase() ==
+                              email.toLowerCase()) ||
+                      (mobile.isNotEmpty && row.mobile?.trim() == mobile);
+          if (matches) {
+            if (!mounted) return;
+            setState(() => _applyUserToForm(row));
+            final state = _salespersonState?.trim() ?? '';
+            if (state.isNotEmpty) {
+              await _loadSalespersons(state);
+            }
+            return;
+          }
+        }
+      } catch (e) {
+        debugPrint('EditUser hydrate: $e');
+      }
+    }
   }
 
   Future<void> _pickImage() async {
@@ -299,6 +542,64 @@ class _EditUserScreenState extends State<EditUserScreen> {
                 onChanged: (value) {},
                 errorText: companyNameError,
               ),
+
+              if (_isExternalFamily) ...[
+                buildRoundedDropdownWithArrow(
+                  label: 'Account type',
+                  hint: 'Select account type',
+                  items: _accountTypeItems(),
+                  value:
+                      _selectedAccountType != null &&
+                              _accountTypeItems().contains(_selectedAccountType)
+                          ? _selectedAccountType
+                          : null,
+                  onChanged: (value) {
+                    setState(() => _selectedAccountType = value);
+                  },
+                  context: context,
+                ),
+                buildUserTextField(
+                  label: 'Branch name',
+                  hint: 'Branch name',
+                  controller: branchNameController,
+                  onChanged: (_) {},
+                ),
+                buildUserTextField(
+                  label: 'Street',
+                  hint: 'Street address',
+                  controller: streetController,
+                  inputType: TextInputType.streetAddress,
+                  onChanged: (_) {},
+                ),
+                buildUserTextField(
+                  label: 'City',
+                  hint: 'City',
+                  controller: cityController,
+                  onChanged: (_) {},
+                ),
+                buildUserTextField(
+                  label: 'Postal code',
+                  hint: 'Postal code',
+                  controller: postalCodeController,
+                  inputType: TextInputType.number,
+                  onChanged: (_) {},
+                ),
+                buildRoundedDropdown(
+                  label: 'Country',
+                  hint: 'Select country',
+                  items: _countryDropdownItems(),
+                  value:
+                      selectedCountry != null &&
+                              _countryDropdownItems().contains(selectedCountry)
+                          ? selectedCountry
+                          : null,
+                  onChanged: (value) {
+                    setState(() => selectedCountry = value);
+                  },
+                  context: context,
+                ),
+              ],
+
               buildUserTextField(
                 label: "Designation",
                 hint: "Enter your designation (Optional)",
@@ -336,7 +637,8 @@ class _EditUserScreenState extends State<EditUserScreen> {
                 onChanged: (value) {},
               ),
               buildUserTextField(
-                label: "Gstin", // Arnima - allow both capital and small letters in gstin and later captial the whole string
+                label:
+                    "Gstin", // Arnima - allow both capital and small letters in gstin and later captial the whole string
                 hint:
                     (userRoleType == "External" ||
                             userRoleType == "VIP" ||
@@ -372,40 +674,45 @@ class _EditUserScreenState extends State<EditUserScreen> {
                 },
               ),
 
-              buildUserTextField(
-                label: "Address",
-                hint: "Enter your Address (Optional)",
-                controller: addressController,
-                onChanged: (value) {
-                  print("User typed: $value");
-                },
-              ),
+              if (!_isExternalFamily) ...[
+                buildUserTextField(
+                  label: "Address",
+                  hint: "Enter your Address (Optional)",
+                  controller: addressController,
+                  onChanged: (value) {
+                    print("User typed: $value");
+                  },
+                ),
+                buildRoundedDropdown(
+                  label: "Country",
+                  hint: "Select Country (Optional)",
+                  items: countries,
+                  value: selectedCountry,
+                  onChanged: (value) {
+                    setState(() {
+                      selectedCountry = value;
+                    });
+                  },
+                  context: context,
+                ),
+                buildRoundedDropdown(
+                  label: "Region",
+                  hint: "Select Region (Optional)",
+                  items: region,
+                  value: selectedRegion,
+                  onChanged: (value) {
+                    setState(() {
+                      selectedRegion = value;
+                    });
+                  },
+                  context: context,
+                ),
+              ],
 
-              buildRoundedDropdown(
-                label: "Country",
-                hint: "Select Country (Optional)",
-                items: countries,
-                value: selectedCountry,
-                onChanged: (value) {
-                  setState(() {
-                    selectedCountry = value;
-                  });
-                },
-                context: context,
-              ),
-
-              buildRoundedDropdown(
-                label: "Region",
-                hint: "Select Region (Optional)",
-                items: region,
-                value: selectedRegion,
-                onChanged: (value) {
-                  setState(() {
-                    selectedRegion = value;
-                  });
-                },
-                context: context,
-              ),
+              if (userRoleType == 'External') ...[
+                const SizedBox(height: 16),
+                _buildExternalSalespersonSection(),
+              ],
 
               buildRoundedDropdownWithArrow(
                 label: "Select role",
@@ -421,13 +728,35 @@ class _EditUserScreenState extends State<EditUserScreen> {
 
                           setState(() {
                             userRoleType = value;
+                            if (value == 'Internal') {
+                              _initialTaggedAccountId ??=
+                                  _accountIdFromUser(widget.user);
+                              _taggedSalesforceAccountId =
+                                  _initialTaggedAccountId;
+                            } else {
+                              _taggedSalesforceAccountId = null;
+                              _initialTaggedAccountId = null;
+                              _taggedAccountDisplayName = null;
+                              _sfAccounts = [];
+                            }
                           });
 
-                          await changeRole();
+                          if (value == 'Internal') {
+                            await _hydrateTaggedAccountForSelectDropdown();
+                            await _loadInternalOwnerAccounts(
+                              preserveTagIfMissingFromApi: true,
+                            );
+                          }
                         }
                         : null,
                 context: context,
               ),
+
+              if (userRoleType == 'Internal') ...[
+                const SizedBox(height: 16),
+                _buildInternalAccountSection(),
+              ],
+
               const SizedBox(height: 30),
 
               MainButton(
@@ -445,36 +774,427 @@ class _EditUserScreenState extends State<EditUserScreen> {
     );
   }
 
-  Future<void> changeRole() async {
-    final body = jsonEncode({
-      "userNumber": widget.user?.mobile,
-      "newUserType": userRoleType,
+  List<String> _accountTypeItems() {
+    final items = List<String>.from(_accountTypeOptions);
+    final current = _selectedAccountType?.trim();
+    if (current != null && current.isNotEmpty && !items.contains(current)) {
+      items.insert(0, current);
+    }
+    return items;
+  }
+
+  List<String> _countryDropdownItems() {
+    final items = List<String>.from(countries);
+    final current = selectedCountry?.trim();
+    if (current != null && current.isNotEmpty && !items.contains(current)) {
+      items.insert(0, current);
+    }
+    return items;
+  }
+
+  List<String> _indianStateItems() {
+    final items = List<String>.from(indianStates);
+    final current = _salespersonState?.trim();
+    if (current != null && current.isNotEmpty && !items.contains(current)) {
+      items.insert(0, current);
+    }
+    return items;
+  }
+
+  Widget _buildExternalSalespersonSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        buildRoundedDropdown(
+          label: 'State',
+          hint: 'Select state',
+          items: _indianStateItems(),
+          value:
+              _salespersonState != null &&
+                      _indianStateItems().contains(_salespersonState)
+                  ? _salespersonState
+                  : null,
+          onChanged: (value) {
+            setState(() {
+              _salespersonState = value;
+              _selectedSalespersonId = null;
+              _salespersons = [];
+            });
+            if (value != null && value.trim().isNotEmpty) {
+              _loadSalespersons(value);
+            }
+          },
+          context: context,
+        ),
+        if (_salespersonsLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 10),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          )
+        else if (_salespersonState != null && _salespersonState!.isNotEmpty)
+          buildRoundedDropdown(
+            label: 'Sales person',
+            hint:
+                _salespersons.isEmpty
+                    ? 'No sales persons for this state'
+                    : 'Select sales person',
+            items: _salespersons.map((e) => e.name).toList(),
+            value: _salespersonLabelForId(_selectedSalespersonId),
+            enabled: _salespersons.isNotEmpty,
+            onChanged: (value) {
+              setState(() {
+                _selectedSalespersonId = _salespersonIdForName(value);
+              });
+            },
+            context: context,
+          ),
+      ],
+    );
+  }
+
+  String? _salespersonLabelForId(String? id) {
+    if (id == null) return null;
+    for (final p in _salespersons) {
+      if (p.id == id) return p.name;
+    }
+    final stored = _storedSalespersonName?.trim();
+    if (stored != null && stored.isNotEmpty) return stored;
+    return null;
+  }
+
+  String? _salespersonIdForName(String? name) {
+    if (name == null) return null;
+    for (final p in _salespersons) {
+      if (p.name == name) return p.id;
+    }
+    if (name == _storedSalespersonName &&
+        _selectedSalespersonId != null &&
+        _selectedSalespersonId!.isNotEmpty) {
+      return _selectedSalespersonId;
+    }
+    return null;
+  }
+
+  Future<void> _loadSalespersons(String state) async {
+    setState(() => _salespersonsLoading = true);
+    final list = await SalespersonDirectory.loadByState(state);
+    if (!mounted) return;
+
+    final merged = <SalespersonOption>[...list];
+  final storedId = _selectedSalespersonId?.trim();
+    if (storedId != null &&
+        storedId.isNotEmpty &&
+        !merged.any((e) => e.id == storedId)) {
+      merged.insert(
+        0,
+        SalespersonOption(
+          id: storedId,
+          name: _storedSalespersonName?.trim().isNotEmpty == true
+              ? _storedSalespersonName!.trim()
+              : 'Assigned sales person',
+          state: state,
+        ),
+      );
+    }
+
+    setState(() {
+      _salespersonsLoading = false;
+      _salespersons = merged;
+      if (_selectedSalespersonId != null &&
+          !merged.any((e) => e.id == _selectedSalespersonId)) {
+        _selectedSalespersonId = null;
+      }
     });
-    debugPrint("🔁 Changing role for userId: ${widget.user?.userId}");
-    debugPrint("📞 User mobile: ${widget.user?.mobile}");
-    debugPrint("➡️ New role: $userRoleType");
-    Loader.show();
+  }
+
+  Widget _buildInternalAccountSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_sfAccountsLoading)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          ),
+        if (_sfAccountsError != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              _sfAccountsError!,
+              style: const TextStyle(color: Colors.red, fontSize: 12),
+            ),
+          ),
+        buildRoundedDropdown(
+          label: 'Select account',
+          hint:
+              _taggedAccountHydrating
+                  ? 'Loading tagged account…'
+                  : _sfAccountsLoading
+                  ? 'Loading accounts…'
+                  : 'Select account (Optional)',
+          items: _accountDropdownItems(),
+          value: _taggedAccountLabel(),
+          enabled: !_sfAccountsLoading && !_taggedAccountHydrating,
+          loadItemsOnOpen: _loadAccountDropdownItems,
+          onChanged: (value) {
+            if (value == null || value == '— None —') {
+              setState(() {
+                _taggedSalesforceAccountId = null;
+                _taggedAccountDisplayName = null;
+              });
+              return;
+            }
+            final resolvedId = _resolveTaggedAccountIdForLabel(value);
+            if (resolvedId == null) {
+              showSnackBar(
+                context,
+                'Could not resolve that account. Open the list and pick again.',
+              );
+              return;
+            }
+            setState(() {
+              _taggedSalesforceAccountId = resolvedId;
+              _taggedAccountDisplayName = value;
+            });
+          },
+          context: context,
+        ),
+        const Text(
+          'Tap to load accounts for this user’s email (POST). Optional tag.',
+          style: TextStyle(
+            fontSize: 12,
+            color: AppColors.lightGrey,
+            height: 1.35,
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<String> _accountDropdownItems() {
+    if (_sfAccounts.isEmpty) {
+      return const ['— None —'];
+    }
+    return ['— None —', ..._sfAccounts.map((e) => e.name)];
+  }
+
+  Future<List<String>> _loadAccountDropdownItems() async {
+    await _loadInternalOwnerAccounts();
+    return _accountDropdownItems();
+  }
+
+  String? _taggedAccountLabel() {
+    if (_taggedAccountHydrating) return null;
+    if (_taggedSalesforceAccountId == null) return null;
+    for (final row in _sfAccounts) {
+      if (_sameSalesforceAccountId(row.id, _taggedSalesforceAccountId)) {
+        return row.name;
+      }
+    }
+    final cached = _taggedAccountDisplayName?.trim();
+    if (cached != null && cached.isNotEmpty) return cached;
+    return null;
+  }
+
+  String? _resolveTaggedAccountIdForLabel(String label) {
+    final row = SalesAccountDirectory.findChoiceByDisplayName(
+      _sfAccounts,
+      label,
+    );
+    if (row == null) return null;
+    return SalesAccountDirectory.canonicalAccountIdForAdminTag(
+      row.id,
+      choices: _sfAccounts,
+    );
+  }
+
+  String? _canonicalTagIdForApi(String? raw) {
+    return SalesAccountDirectory.canonicalAccountIdForAdminTag(
+      raw,
+      choices: _sfAccounts,
+    );
+  }
+
+  static String _editTrim(String? v) => v?.trim() ?? '';
+
+  String _mobileForAdminApis() {
+    return mobileNumberController.text.trim().isNotEmpty
+        ? mobileNumberController.text.trim()
+        : (widget.user?.mobile ?? '').trim();
+  }
+
+  bool _internalAccountTagChanged() {
+    final newId = _canonicalTagIdForApi(_taggedSalesforceAccountId);
+    final oldId = _canonicalTagIdForApi(_initialTaggedAccountId);
+    if (newId == null && oldId == null) return false;
+    if (newId != null &&
+        oldId != null &&
+        SalesAccountDirectory.sameSalesforceAccountId(newId, oldId)) {
+      return false;
+    }
+    return true;
+  }
+
+  bool _hasProfileFieldChanges() {
+    final u = widget.user;
+    if (u == null) return true;
+    if (_pickedImage != null) return true;
+    if (_editTrim(userRoleType) != _editTrim(u.userType)) return true;
+
+    final country = selectedCountry ?? u.country;
+    final region = selectedRegion ?? u.region;
+
+    return _editTrim(firstNameController.text) != _editTrim(u.firstName) ||
+        _editTrim(lastNameController.text) != _editTrim(u.lastName) ||
+        _editTrim(userNameController.text) != _editTrim(u.username) ||
+        _editTrim(emailController.text) != _editTrim(u.email) ||
+        _editTrim(alternateEmailController.text) != _editTrim(u.alternateEmail) ||
+        _editTrim(mobileNumberController.text) != _editTrim(u.mobile) ||
+        _editTrim(alternateMobileController.text) != _editTrim(u.alternateMobile) ||
+        _editTrim(designationController.text) != _editTrim(u.designation) ||
+        _editTrim(departmentController.text) != _editTrim(u.department) ||
+        _editTrim(companyNameController.text) != _editTrim(u.companyName) ||
+        _editTrim(landlineNumberController.text) != _editTrim(u.landlineNumber) ||
+        _editTrim(extensionController.text) != _editTrim(u.extentionNumber) ||
+        _editTrim(addressController.text) != _editTrim(u.address) ||
+        _editTrim(country) != _editTrim(u.country) ||
+        _editTrim(region) != _editTrim(u.region) ||
+        _editTrim(gstinController.text) != _editTrim(u.gstin);
+  }
+
+  bool _isAccountTagOnlySave() {
+    return userRoleType == 'Internal' &&
+        _pickedImage == null &&
+        !_hasProfileFieldChanges() &&
+        _internalAccountTagChanged();
+  }
+
+  Future<bool> _commitRoleChangeIfNeeded() async {
+    final original = widget.user?.userType?.trim() ?? '';
+    final desired = (userRoleType ?? '').trim();
+    if (original == desired) return true;
+
+    final mobile = _mobileForAdminApis();
+    if (mobile.isEmpty) {
+      if (mounted) {
+        showSnackBar(
+          context,
+          'Mobile number is required before changing role.',
+        );
+      }
+      return false;
+    }
+
     final response = await HttpClientHelper.patchWithBearer(
       ApiConstants.changeUserType,
       AuthDataHelper.getToken(),
-      body: body,
+      body: jsonEncode({
+        'userNumber': mobile,
+        'newUserType': desired,
+      }),
     );
-    Loader.hide();
-    final decoded = jsonDecode(response.data);
 
-    final userData = AddUserResponse.fromJson(decoded);
-
-    if (response.statusCode >= 200 &&
-        response.statusCode < 300 &&
-        userData.user != null) {
-      // Navigator.pop(context, true);
-      showSnackBar(context, "Role updated successfully");
-    } else {
-      showSnackBar(context, "Error: ${userData.message}");
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return true;
     }
+
+    if (mounted) {
+      String fallback = 'Could not change role';
+      try {
+        fallback = AddUserResponse.fromJson(
+          jsonDecode(response.data),
+        ).message ?? fallback;
+      } catch (_) {}
+      showSnackBar(
+        context,
+        parseApiErrorMessage(response.data, fallback: fallback),
+      );
+    }
+    return false;
+  }
+
+  Future<void> _loadInternalOwnerAccounts({
+    bool preserveTagIfMissingFromApi = false,
+  }) async {
+    if (!(await checkInternetConnection())) {
+      if (mounted) showSnackBar(context, AppStrings.pleaseCheckInternet);
+      return;
+    }
+
+    final previousTag = _taggedSalesforceAccountId;
+    final email = emailController.text.trim();
+
+    if (email.isEmpty) {
+      setState(() => _sfAccountsError = 'No email on this user');
+      return;
+    }
+
+    setState(() {
+      _sfAccountsLoading = true;
+      _sfAccountsError = null;
+    });
+
+    final result = await SalesAccountDirectory.loadForAdminAccountPicker(
+      internalUserEmail: email,
+    );
+
+    if (!mounted) return;
+
+    var choices = List<SalesAccountChoice>.from(result.choices);
+    final tag = previousTag ?? _taggedSalesforceAccountId;
+    if (tag != null &&
+        !choices.any((c) => _sameSalesforceAccountId(c.id, tag))) {
+      final name = await SalesAccountDirectory.resolveAccountDisplayName(tag);
+      choices.add(SalesAccountChoice(id: tag, name: name, fromApi: true));
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _sfAccountsLoading = false;
+      _sfAccounts = choices;
+      _sfAccountsError =
+          choices.isEmpty
+              ? (result.errorMessage ?? 'No accounts found for this email')
+              : null;
+      if (tag != null) {
+        final matched =
+            choices.where((c) => _sameSalesforceAccountId(c.id, tag)).toList();
+        if (matched.isNotEmpty) {
+          final row = matched.first;
+          _taggedSalesforceAccountId =
+              SalesAccountDirectory.canonicalAccountIdForAdminTag(
+                row.id,
+                choices: choices,
+              ) ??
+              row.id;
+          _taggedAccountDisplayName = row.name;
+        } else if (preserveTagIfMissingFromApi) {
+          final fallbackName = _taggedAccountDisplayName?.trim() ?? '';
+          if (fallbackName.isNotEmpty &&
+              !choices.any((c) => _sameSalesforceAccountId(c.id, tag))) {
+            choices.add(
+              SalesAccountChoice(id: tag, name: fallbackName, fromApi: true),
+            );
+          }
+          _sfAccounts = choices;
+          _taggedSalesforceAccountId = tag;
+        }
+      }
+    });
   }
 
   List<String> getAllowedUserRoles(String? userType) {
+    final editorIsAdmin =
+        AuthDataHelper.getUserType().trim().toLowerCase() == 'admin';
+    if (editorIsAdmin) {
+      final roles = List<String>.from(addUserRoles);
+      final current = userType?.trim();
+      if (current != null && current.isNotEmpty && !roles.contains(current)) {
+        roles.insert(0, current);
+      }
+      return roles;
+    }
+
     // Compute allowed role changes for the current user type
     List<String> allowedChanges;
     switch (userType) {
@@ -530,8 +1250,137 @@ class _EditUserScreenState extends State<EditUserScreen> {
     );
   }
 
+  String? _normalizedTaggedAccountId(String? raw) {
+    final trimmed = raw?.trim() ?? '';
+    if (trimmed.isEmpty) return null;
+    return trimmed;
+  }
+
+  String _editedUserMongoId() {
+    return widget.user?.userId?.trim() ?? widget.user?.id?.trim() ?? '';
+  }
+
+  Map<String, String> _adminProfileUpdateFields(
+    UserData user, {
+    required String mobile,
+    required String username,
+  }) {
+    final deviceType =
+        widget.user?.deviceType?.trim().isNotEmpty == true
+            ? widget.user!.deviceType!.trim()
+            : (Platform.isIOS ? 'ios' : 'android');
+    final isActive = widget.user?.isActive ?? true;
+    final termsAccepted = widget.user?.termsAccepted ?? true;
+    final activeRms = widget.user?.activeRmsUser ?? true;
+
+    return {
+      'username': username,
+      'mobile': mobile,
+      'firstName': (user.firstName ?? '').trim(),
+      'lastName': (user.lastName ?? '').trim(),
+      'designation': (user.designation ?? '').trim(),
+      'department': (user.department ?? '').trim(),
+      'email': (user.email ?? '').trim(),
+      'alternateEmail': (user.alternateEmail ?? '').trim(),
+      'alternateMobile': (user.alternateMobile ?? '').trim(),
+      'landlineNumber': (user.landlineNumber ?? '').trim(),
+      'extentionNumber': (user.extentionNumber ?? '').trim(),
+      'address': (user.address ?? '').trim(),
+      'country': CountryUtils.salesforceCountryCode(user.country),
+      'companyName': (user.companyName ?? '').trim(),
+      'region':
+          _isExternalFamily
+              ? CountryUtils.salesforceIndianStateCode(_salespersonState)
+              : (user.region ?? '').trim(),
+      'gstin': (user.gstin ?? '').trim(),
+      if (_isExternalFamily) ...{
+        if (branchNameController.text.trim().isNotEmpty)
+          'branchName': branchNameController.text.trim(),
+        if (streetController.text.trim().isNotEmpty)
+          'street': streetController.text.trim(),
+        if (cityController.text.trim().isNotEmpty)
+          'city': cityController.text.trim(),
+        if (postalCodeController.text.trim().isNotEmpty)
+          'postalCode': postalCodeController.text.trim(),
+        if ((_salespersonState ?? '').trim().isNotEmpty)
+          'state': CountryUtils.salesforceIndianStateCode(_salespersonState),
+        if (_selectedAccountType != null &&
+            _selectedAccountType!.trim().isNotEmpty)
+          'accountType': _selectedAccountType!.trim(),
+        if (_selectedSalespersonId != null &&
+            _selectedSalespersonId!.trim().isNotEmpty)
+          'salespersonId': _selectedSalespersonId!.trim(),
+      },
+      'termsAccepted': termsAccepted ? 'true' : 'false',
+      'Active_RMS_User': activeRms ? 'true' : 'false',
+      'isActive': isActive ? 'true' : 'false',
+      'deviceType': deviceType,
+    };
+  }
+
+  /// Profile PATCH Joi does not accept `accountId` with other fields; tag alone.
+  Future<bool> _syncInternalAccountTag() async {
+    final userId = _editedUserMongoId();
+    if (userId.isEmpty) return false;
+
+    final newId = _canonicalTagIdForApi(_taggedSalesforceAccountId);
+    final oldId = _canonicalTagIdForApi(_initialTaggedAccountId);
+    if (newId != null &&
+        oldId != null &&
+        SalesAccountDirectory.sameSalesforceAccountId(newId, oldId)) {
+      return true;
+    }
+    if (newId == null && oldId == null) return true;
+
+    final mobile = _mobileForAdminApis();
+    final username =
+        userNameController.text.trim().isNotEmpty
+            ? userNameController.text.trim()
+            : (mobile.isNotEmpty
+                ? mobile
+                : (widget.user?.username ?? '').trim());
+    final result = await AdminUserAccountTagService.syncForUser(
+      userId: widget.user?.userId?.trim() ?? userId,
+      mongoId: widget.user?.id,
+      accountId: newId,
+      accountChoices: _sfAccounts,
+      identity: AdminAccountTagIdentity(
+        mobile: mobile,
+        username: username,
+        email: emailController.text.trim(),
+      ),
+    );
+    if (result.ok) {
+      UserCache.rememberAccountTag(
+        userId: widget.user?.userId,
+        mongoId: widget.user?.id,
+        accountId: newId ?? '',
+      );
+      return true;
+    }
+    if (mounted) {
+      showSnackBar(
+        context,
+        'Error: ${result.errorMessage ?? 'Could not update tagged account'}',
+      );
+    }
+    return false;
+  }
+
   Future<void> saveUser() async {
     if (!validateFields()) return;
+
+    if (userRoleType == 'Internal') {
+      final label = _taggedAccountLabel();
+      final id = _normalizedTaggedAccountId(_taggedSalesforceAccountId);
+      if (label != null && label != '— None —' && id == null) {
+        showSnackBar(
+          context,
+          'Selected account is invalid. Open the list and choose again.',
+        );
+        return;
+      }
+    }
 
     // Check for image errors before saving
     if (imageError != null) {
@@ -545,7 +1394,49 @@ class _EditUserScreenState extends State<EditUserScreen> {
       return;
     }
 
+    final editedUserId = _editedUserMongoId();
+    if (editedUserId.isEmpty) {
+      showSnackBar(context, 'Cannot save: user id is missing.');
+      return;
+    }
+
     try {
+      Loader.show();
+      if (!(await _commitRoleChangeIfNeeded())) {
+        Loader.hide();
+        return;
+      }
+
+      final mobile = _mobileForAdminApis();
+      final username =
+          userNameController.text.trim().isNotEmpty
+              ? userNameController.text.trim()
+              : (mobile.isNotEmpty
+                  ? mobile
+                  : (widget.user?.username ?? '').trim());
+      if (mobile.isEmpty || username.isEmpty) {
+        Loader.hide();
+        showSnackBar(context, 'Mobile number is required to update this user.');
+        return;
+      }
+
+      final updateUrl = '${ApiConstants.updateUser}/$editedUserId';
+
+      if (_isAccountTagOnlySave()) {
+        Loader.hide();
+        showSnackBar(context, 'Updating tagged account...');
+        Loader.show();
+        final tagOk = await _syncInternalAccountTag();
+        Loader.hide();
+        if (!mounted) return;
+        if (tagOk) {
+          _initialTaggedAccountId = _taggedSalesforceAccountId;
+          showSnackBar(context, 'Tagged account updated.');
+          Navigator.pop(context, true);
+        }
+        return;
+      }
+
       final user = UserData(
         firstName: firstNameController.text.trim(),
         lastName: lastNameController.text.trim(),
@@ -557,51 +1448,58 @@ class _EditUserScreenState extends State<EditUserScreen> {
         companyName: companyNameController.text.trim(),
         landlineNumber: landlineNumberController.text.trim(),
         extentionNumber: extensionController.text.trim(),
-        address: addressController.text.trim(),
-        country: selectedCountry,
-        region: selectedRegion,
+        address:
+            _isExternalFamily
+                ? streetController.text.trim()
+                : addressController.text.trim(),
+        country: selectedCountry ?? widget.user?.country,
+        region:
+            _isExternalFamily
+                ? _salespersonState
+                : (selectedRegion ?? widget.user?.region),
         gstin: gstinController.text.trim(),
         profileImageFile: _pickedImage,
         userType: userRoleType,
       );
 
+      final fields = _adminProfileUpdateFields(
+        user,
+        mobile: mobile,
+        username: username,
+      );
+
       showSnackBar(context, "Updating user...");
 
-      Loader.show();
       final response = await HttpClientHelper.patchWithMultipart(
-        '${ApiConstants.updateUser}/${widget.user?.userId}',
+        updateUrl,
         AuthDataHelper.getToken(),
-        fields: {
-          'firstName': (user.firstName ?? '').trim(),
-          'lastName': (user.lastName ?? '').trim(),
-          'designation': (user.designation ?? '').trim(),
-          'department': (user.department ?? '').trim(),
-          'email': (user.email ?? '').trim(),
-          'alternateEmail': (user.alternateEmail ?? '').trim(),
-          'alternateMobile': (user.alternateMobile ?? '').trim(),
-          'landlineNumber': (user.landlineNumber ?? '').trim(),
-          'extentionNumber': (user.extentionNumber ?? '').trim(),
-          'address': (user.address ?? '').trim(),
-          'country': (user.country ?? '').trim(),
-          'companyName': (user.companyName ?? '').trim(),
-          'region': (user.region ?? '').trim(),
-          'gstin': (user.gstin ?? '').trim(),
-          'userType': (user.userType ?? '').trim(),
-        },
+        fields: fields,
         file: user.profileImageFile,
       );
-      debugPrint("Response data: ${response.data}");
+      debugPrint('EditUser profile PATCH: ${response.data}');
       Loader.hide();
       final decoded = jsonDecode(response.data);
 
       final userData = EditUserResponse.fromJson(decoded);
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
+        if (userRoleType == 'Internal') {
+          final tagOk = await _syncInternalAccountTag();
+          if (!tagOk) {
+            showSnackBar(
+              context,
+              'Profile saved, but tagged account could not be updated.',
+            );
+            return;
+          }
+          _initialTaggedAccountId = _taggedSalesforceAccountId;
+        }
+
         showSnackBar(context, "${userData.message}");
 
         // If admin changed the currently logged-in user's type, invalidate
         // cached quotes so the next load always re-fetches with the fresh type.
-        final editedUserId = widget.user?.userId ?? widget.user?.id ?? '';
+        final editedUserId = _editedUserMongoId();
         final loggedInUserId = AuthDataHelper.getId();
         if (editedUserId.isNotEmpty &&
             editedUserId == loggedInUserId &&
@@ -611,7 +1509,11 @@ class _EditUserScreenState extends State<EditUserScreen> {
 
         Navigator.pop(context, true);
       } else {
-        showSnackBar(context, "Error: ${userData.message}");
+        final message = parseApiErrorMessage(
+          response.data,
+          fallback: userData.message ?? 'Could not update user',
+        );
+        showSnackBar(context, "Error: $message");
       }
     } on SocketException {
       Loader.hide();

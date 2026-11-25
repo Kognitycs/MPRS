@@ -131,6 +131,10 @@ class _LoginMobileScreenState extends State<LoginMobileScreen> {
 
       if (!mounted) return;
 
+      // Dismiss loader before opening password — otherwise it stays up until
+      // pop and blocks the global ProgressLoader flag during login.
+      ProgressLoader.hide(context);
+
       await Navigator.push(
         context,
         MaterialPageRoute(

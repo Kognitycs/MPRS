@@ -61,7 +61,6 @@ class _BookingScreenState extends State<BookingScreen>
 
   bool get _isAdminUser => AuthDataHelper.isAdminUser();
 
-
   bool _isCurrentTabLoading() {
     if (widget.mode == BookingScreenMode.book) {
       if (selectedTab == 0 && !_isAdminUser) return false;
@@ -563,6 +562,14 @@ class _BookingScreenState extends State<BookingScreen>
     final seed = ctrl.inProgressAdminQuoteById[id];
     final shipment = ctrl.inProgressShipmentRecordById[id];
     for (final raw in [
+      booking.createdDate,
+      seed?.createdDateC,
+      shipment?.createdDate,
+    ]) {
+      final formatted = _validTillFromCreated(raw);
+      if (formatted != null) return formatted;
+    }
+    for (final raw in [
       booking.expirationDate,
       seed?.expirationDate,
       shipment?.expirationDate,
@@ -571,6 +578,19 @@ class _BookingScreenState extends State<BookingScreen>
       if (formatted != null) return formatted;
     }
     return '';
+  }
+
+  /// Valid Till is the quote created date plus 2 days.
+  String? _validTillFromCreated(dynamic raw) {
+    if (raw == null) return null;
+    final text = raw.toString().trim();
+    if (text.isEmpty || text == 'null') return null;
+    final created = DateTime.tryParse(text.split('T').first);
+    if (created == null) return null;
+    final till = created.add(const Duration(days: 2));
+    final iso =
+        '${till.year}-${till.month.toString().padLeft(2, '0')}-${till.day.toString().padLeft(2, '0')}';
+    return Records.formatListDate(iso);
   }
 
   String _quotePriceLabel(Records booking, BookingController ctrl) {
@@ -779,7 +799,8 @@ class _BookingScreenState extends State<BookingScreen>
     final orderNo = booking.displayOrderNumber;
     final bl = booking.blNumberC?.toString().trim() ?? '';
     final containerType = booking.containerTypeC?.toString().trim() ?? '';
-    final bookedDate = Records.formatListDate(booking.bookedDateC) ??
+    final bookedDate =
+        Records.formatListDate(booking.bookedDateC) ??
         (booking.displayBookedDate.isEmpty ? null : booking.displayBookedDate);
     final spec = _containerSpec(booking);
     final vessel = booking.vesselNameC?.toString().trim() ?? '';
@@ -841,79 +862,85 @@ class _BookingScreenState extends State<BookingScreen>
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                      Container(
-                        width: 56,
-                        height: 56,
-                        decoration: BoxDecoration(
-                          color: _navyLight,
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: Icon(
-                          _bookedCardIcon(booking),
-                          color: _navy,
-                          size: 32,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              route.isEmpty ? 'Shipment' : route.join('  →  '),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w800,
-                                color: Color(0xFF111827),
-                                height: 1.25,
+                            Container(
+                              width: 56,
+                              height: 56,
+                              decoration: BoxDecoration(
+                                color: _navyLight,
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Icon(
+                                _bookedCardIcon(booking),
+                                color: _navy,
+                                size: 32,
                               ),
                             ),
-                            if (orderNo.isNotEmpty) _cardDetail('Order: $orderNo'),
-                            if (bl.isNotEmpty) _cardDetail('BL: $bl'),
-                            if (containerType.isNotEmpty)
-                              _cardDetail('Container type: $containerType'),
-                            if (bookedDate != null)
-                              _cardDetail('Booked date: $bookedDate'),
-                            if (spec.isNotEmpty) _cardDetail('Container size: $spec'),
-                            if (vesselLine.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 3),
-                                child: Text(
-                                  vesselLine,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 12.5,
-                                    color: Color(0xFF667085),
-                                    height: 1.3,
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    route.isEmpty
+                                        ? 'Shipment'
+                                        : route.join('  →  '),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF111827),
+                                      height: 1.25,
+                                    ),
                                   ),
-                                ),
+                                  if (orderNo.isNotEmpty)
+                                    _cardDetail('Order: $orderNo'),
+                                  if (bl.isNotEmpty) _cardDetail('BL: $bl'),
+                                  if (containerType.isNotEmpty)
+                                    _cardDetail(
+                                      'Container type: $containerType',
+                                    ),
+                                  if (bookedDate != null)
+                                    _cardDetail('Booked date: $bookedDate'),
+                                  if (spec.isNotEmpty)
+                                    _cardDetail('Container size: $spec'),
+                                  if (vesselLine.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 3),
+                                      child: Text(
+                                        vesselLine,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          color: Color(0xFF667085),
+                                          height: 1.3,
+                                        ),
+                                      ),
+                                    ),
+                                  if (loadType.isNotEmpty)
+                                    _cardDetail('Load type: $loadType'),
+                                  if (ocean && routing.isNotEmpty)
+                                    _cardDetail('Routing: $routing'),
+                                  if (ocean && commodity.isNotEmpty)
+                                    _cardDetail('Commodity: $commodity'),
+                                  if (!ocean && commodity.isNotEmpty)
+                                    _cardDetail('Commodity: $commodity'),
+                                  if (arrival != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 6),
+                                      child: Text(
+                                        'ETA: $arrival',
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w800,
+                                          color: _navy,
+                                        ),
+                                      ),
+                                    ),
+                                ],
                               ),
-                            if (loadType.isNotEmpty)
-                              _cardDetail('Load type: $loadType'),
-                            if (ocean && routing.isNotEmpty)
-                              _cardDetail('Routing: $routing'),
-                            if (ocean && commodity.isNotEmpty)
-                              _cardDetail('Commodity: $commodity'),
-                            if (!ocean && commodity.isNotEmpty)
-                              _cardDetail('Commodity: $commodity'),
-                            if (arrival != null)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 6),
-                                child: Text(
-                                  'ETA: $arrival',
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w800,
-                                    color: _navy,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
+                            ),
                           ],
                         ),
                       ),
@@ -969,7 +996,9 @@ class _BookingScreenState extends State<BookingScreen>
     if (feet == null) return '';
     final shortType = _shortContainerType(type);
     final sizeLabel =
-        shortType.isEmpty ? "${feet.group(1)}'" : "${feet.group(1)}' $shortType";
+        shortType.isEmpty
+            ? "${feet.group(1)}'"
+            : "${feet.group(1)}' $shortType";
     final count = num.tryParse(qty);
     if (count != null && count > 0) {
       final shown =
@@ -1056,7 +1085,6 @@ class _BookingScreenState extends State<BookingScreen>
 
   String _trimText(dynamic value) => value?.toString().trim() ?? '';
 
-
   String _quoteContainerSize(Records booking, BookingController ctrl) {
     final id = booking.id?.toString().trim() ?? '';
     final adminSeed = ctrl.inProgressAdminQuoteById[id];
@@ -1067,7 +1095,6 @@ class _BookingScreenState extends State<BookingScreen>
           shipmentRecord?.containerSizeC,
     );
   }
-
 
   void _openInProgressDetail(String id, BookingController ctrl) {
     if (id.isEmpty) return;

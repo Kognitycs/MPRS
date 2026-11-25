@@ -62,6 +62,28 @@ class ValidationUtils {
     return null;
   }
 
+  /// RMS admin add-user / auth — symbols limited to `@ $ ! % * ? &`.
+  static String? getBackendPasswordError(String password) {
+    if (password.isEmpty) return 'Please enter password';
+    if (password.length < 8) return 'Use at least 8 characters';
+    if (!RegExp(r'[A-Z]').hasMatch(password)) {
+      return 'Must include at least one uppercase letter';
+    }
+    if (!RegExp(r'[a-z]').hasMatch(password)) {
+      return 'Must include at least one lowercase letter';
+    }
+    if (!RegExp(r'[0-9]').hasMatch(password)) {
+      return 'Must include at least one number';
+    }
+    if (!RegExp(r'[@$!%*?&]').hasMatch(password)) {
+      return 'Must include one of: @ \$ ! % * ? &';
+    }
+    if (RegExp(r'[^A-Za-z0-9@$!%*?&]').hasMatch(password)) {
+      return 'Only these symbols allowed: @ \$ ! % * ? &';
+    }
+    return null;
+  }
+
 }
 
 

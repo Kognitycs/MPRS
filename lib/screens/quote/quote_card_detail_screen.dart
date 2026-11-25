@@ -138,7 +138,11 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
     BuildContext? dialogContext,
   }) async {
     ProgressLoader.show(context);
-    final result = await BookingService.reserveQuoteSpace(quoteId);
+    final customerAccountId = _reserveCustomerAccountId();
+    final result = await BookingService.reserveQuoteSpace(
+      quoteId,
+      accountId: customerAccountId,
+    );
     if (mounted) ProgressLoader.hide(context);
     if (!mounted) return;
 
@@ -152,9 +156,10 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
       return;
     }
 
-    final dialogNav = dialogContext != null
-        ? Navigator.of(dialogContext)
-        : Navigator.of(context, rootNavigator: true);
+    final dialogNav =
+        dialogContext != null
+            ? Navigator.of(dialogContext)
+            : Navigator.of(context, rootNavigator: true);
     if (dialogNav.canPop()) {
       dialogNav.pop();
     }
@@ -209,7 +214,11 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.check, color: Colors.green, size: 20),
+                          const Icon(
+                            Icons.check,
+                            color: Colors.green,
+                            size: 20,
+                          ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Text(
@@ -223,7 +232,11 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.check, color: Colors.green, size: 20),
+                          const Icon(
+                            Icons.check,
+                            color: Colors.green,
+                            size: 20,
+                          ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Text(
@@ -326,21 +339,6 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
     );
   }
 
-  void _onReservePressed() {
-    if (_isAdminUser) return;
-    final quoteId = _quoteId;
-    if (quoteId.isEmpty) {
-      Get.snackbar(
-        'Error',
-        'Quote id is missing — cannot reserve space.',
-        backgroundColor: Colors.red.shade100,
-        colorText: Colors.black,
-      );
-      return;
-    }
-    _showBookingDialog(quoteId: quoteId);
-  }
-
   SavedQuotationsModel get _quoteData {
     final merged = SavedQuotationsModel.merge([
       widget.quote,
@@ -398,9 +396,9 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
   }
 
   String get _goodsValueLabel {
-    final symbol = _currencyIso == 'USD' ? '\$' : '₹';
     final value = _quoteData.goodsValue ?? widget.quote.goodsValue;
-    if (value == null) return '—';
+    if (value == null || value <= 1) return '';
+    final symbol = _currencyIso == 'USD' ? '\$' : '₹';
     return '$symbol${NumberFormat('#,##0').format(value)}';
   }
 
@@ -431,12 +429,29 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
     return '—';
   }
 
-  bool get _isAcceptedQuote =>
-      SavedQuotationsModel.isAcceptedStatus(_statusLabel);
-
   bool get _isAdminUser => AuthDataHelper.isAdminUser();
 
-  bool get _showReserveButton => !_isAcceptedQuote && !_isAdminUser;
+  bool get _isInternalSalesUser => AuthDataHelper.isInternalUser();
+
+  String _reserveCustomerAccountId() {
+    final fromQuote =
+        (_quoteData.accountId ?? widget.quote.accountId ?? '').trim();
+    if (fromQuote.isNotEmpty) return fromQuote;
+    return BookingService.resolveAccountId();
+  }
+
+  /// Admin cannot reserve. Accepted quotes cannot reserve again from quote detail.
+  bool get _showReserveButton {
+    if (_isAdminUser) return false;
+    final status = SavedQuotationsModel.normalizeQuoteListStatus(_statusLabel);
+    if (status == 'denied') return false;
+    if (SavedQuotationsModel.isAcceptedStatus(status)) return false;
+    if (_isInternalSalesUser) {
+      return SavedQuotationsModel.isPendingStatus(status) ||
+          SavedQuotationsModel.isDraftStatus(status);
+    }
+    return true;
+  }
 
   String _formatDisplayDate(dynamic raw) {
     if (raw == null) return '';
@@ -451,6 +466,15 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
   }
 
   String get _expirationDate {
+    final createdRaw = _quoteData.createdDateC ?? widget.quote.createdDateC;
+    final created = DateTime.tryParse(
+      createdRaw?.toString().split('T').first ?? '',
+    );
+    if (created != null) {
+      return DateFormat(
+        'dd MMM yyyy',
+      ).format(created.add(const Duration(days: 2)));
+    }
     final formatted = _formatDisplayDate(
       widget.shipmentRecord?.expirationDate ?? _quoteData.expirationDate,
     );
@@ -780,16 +804,17 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
   }
 
   Widget _buildTitledDetails() {
-    final rows = <MapEntry<String, String>>[
-      MapEntry('Load Type', _loadType),
-      MapEntry('Container Type', _quoteData.containerType ?? ''),
-      MapEntry('Mode of Shipment', _quoteData.modeOfShipment ?? ''),
-      MapEntry('Net Weight (KGS)', _netWeightLabel),
-      MapEntry('Goods Value', _goodsValueLabel),
-    ].where((row) {
-      final value = row.value.trim();
-      return value.isNotEmpty && value != '—';
-    }).toList();
+    final rows =
+        <MapEntry<String, String>>[
+          MapEntry('Load Type', _loadType),
+          MapEntry('Container Type', _quoteData.containerType ?? ''),
+          MapEntry('Mode of Shipment', _quoteData.modeOfShipment ?? ''),
+          MapEntry('Net Weight (KGS)', _netWeightLabel),
+          MapEntry('Goods Value', _goodsValueLabel),
+        ].where((row) {
+          final value = row.value.trim();
+          return value.isNotEmpty && value != '—';
+        }).toList();
     if (rows.isEmpty) return const SizedBox.shrink();
     return _detailShell(
       child: Column(
@@ -826,7 +851,6 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
       ),
     );
   }
-
 
   Widget _buildPdfCard() {
     final pdfs = _controller.quotePdfList;
@@ -1022,27 +1046,22 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-        child: SizedBox(
-          width: double.infinity,
-          height: 52,
-          child: ElevatedButton(
-            onPressed: _onReservePressed,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.main,
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            child: Text(
-              'Reserve Your Space',
-              style: AppTextStyles.montserratSemiBold.copyWith(
-                fontSize: 16,
-                color: Colors.white,
-              ),
-            ),
-          ),
+        child: _SwipeReserveYourSpace(
+          onConfirmed: () async {
+            if (_isAdminUser) return false;
+            final quoteId = _quoteId;
+            if (quoteId.isEmpty) {
+              Get.snackbar(
+                'Error',
+                'Quote id is missing — cannot reserve space.',
+                backgroundColor: Colors.red.shade100,
+                colorText: Colors.black,
+              );
+              return false;
+            }
+            _showBookingDialog(quoteId: quoteId);
+            return true;
+          },
         ),
       ),
     );
@@ -1138,6 +1157,194 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
               ],
             ),
           ),
+    );
+  }
+}
+
+/// Swipe-to-reserve on quote detail (same interaction as slide-to-download on Get Quote).
+class _SwipeReserveYourSpace extends StatefulWidget {
+  final Future<bool> Function() onConfirmed;
+
+  const _SwipeReserveYourSpace({required this.onConfirmed});
+
+  @override
+  State<_SwipeReserveYourSpace> createState() => _SwipeReserveYourSpaceState();
+}
+
+class _SwipeReserveYourSpaceState extends State<_SwipeReserveYourSpace>
+    with SingleTickerProviderStateMixin {
+  double _drag = 0;
+  bool _busy = false;
+  late final AnimationController _hint;
+
+  @override
+  void initState() {
+    super.initState();
+    _hint = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _hint.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const thumb = 52.0;
+        final max = (constraints.maxWidth - thumb - 8).clamp(
+          0.0,
+          constraints.maxWidth,
+        );
+        final offset = _busy ? max : _drag.clamp(0.0, max);
+        final progress = max == 0 ? 0.0 : offset / max;
+        final label = _busy ? 'Opening…' : 'Slide to reserve your space';
+
+        return AnimatedBuilder(
+          animation: _hint,
+          builder: (context, _) {
+            final nudge = _busy ? 0.0 : (_hint.value * 8);
+            return Container(
+              height: 64,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(32),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF0039B5), Color(0xFF2F6BFF)],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.main.withValues(alpha: 0.28),
+                    blurRadius: 16,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(32),
+                child: Stack(
+                  alignment: Alignment.centerLeft,
+                  children: [
+                    Positioned(
+                      left: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: offset + thumb + 8,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              Colors.white.withValues(alpha: 0.18),
+                              Colors.white.withValues(alpha: 0.05),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    Center(
+                      child: Opacity(
+                        opacity: (1 - progress).clamp(0.25, 1),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              label,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 15,
+                              ),
+                            ),
+                            if (!_busy) ...[
+                              const SizedBox(width: 8),
+                              Transform.translate(
+                                offset: Offset(nudge, 0),
+                                child: Icon(
+                                  Icons.keyboard_double_arrow_right,
+                                  color: Colors.white.withValues(alpha: 0.9),
+                                  size: 22,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 6 + offset,
+                      child: GestureDetector(
+                        onHorizontalDragUpdate:
+                            _busy
+                                ? null
+                                : (details) {
+                                  setState(() {
+                                    _drag = (_drag + details.delta.dx).clamp(
+                                      0.0,
+                                      max,
+                                    );
+                                  });
+                                },
+                        onHorizontalDragEnd:
+                            _busy
+                                ? null
+                                : (_) async {
+                                  final done = max > 0 && _drag >= max * 0.82;
+                                  if (!done) {
+                                    setState(() => _drag = 0);
+                                    return;
+                                  }
+                                  setState(() {
+                                    _busy = true;
+                                    _drag = max;
+                                  });
+                                  final ok = await widget.onConfirmed();
+                                  if (!mounted) return;
+                                  setState(() {
+                                    _busy = false;
+                                    _drag = ok ? max : 0;
+                                  });
+                                },
+                        child: Container(
+                          width: thumb,
+                          height: thumb,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.12),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child:
+                              _busy
+                                  ? const Padding(
+                                    padding: EdgeInsets.all(16),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.4,
+                                      color: AppColors.main,
+                                    ),
+                                  )
+                                  : const Icon(
+                                    Icons.arrow_forward_rounded,
+                                    color: AppColors.main,
+                                  ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

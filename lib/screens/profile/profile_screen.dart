@@ -80,11 +80,11 @@ class ProfileScreen extends StatelessWidget {
 
               const SizedBox(height: 20),
 
-              MainButton(text: 'Save Changes', onPressed: () {}),
-
-              const SizedBox(height: 40),
-              OutlinedButton.icon(
-                onPressed: () {
+              ProfileStickyActions(
+                saveLabel: 'Save Changes',
+                onSave: () {},
+                showDeleteAccount: false,
+                onChangePassword: () {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -92,22 +92,8 @@ class ProfileScreen extends StatelessWidget {
                     ),
                   );
                 },
-                icon: const Icon(Icons.lock_outline_rounded, size: 18),
-                label: const Text('Change Password'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.main,
-                  side: const BorderSide(color: AppColors.main),
-                  minimumSize: const Size(double.infinity, 50),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  textStyle: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
             ],
           ),
         ),

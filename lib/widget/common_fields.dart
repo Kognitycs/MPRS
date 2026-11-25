@@ -216,6 +216,221 @@ Widget buildSignupDropdown({
   );
 }
 
+/// Multi-select signup dropdown (same chrome as [buildSignupDropdown]).
+Widget buildSignupMultiSelectDropdown({
+  required BuildContext context,
+  required String label,
+  required String hint,
+  required List<String> items,
+  required Set<String> selected,
+  required ValueChanged<Set<String>> onChanged,
+  bool isRequired = false,
+  String? errorText,
+}) {
+  final hasError = errorText != null;
+  final display =
+      selected.isEmpty ? null : (selected.toList()..sort()).join(', ');
+
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        RichText(
+          text: TextSpan(
+            style: AppTextStyles.montserratSemiBold.copyWith(
+              fontSize: 14,
+              color: AppColors.black,
+            ),
+            children: [
+              TextSpan(text: label),
+              if (isRequired)
+                const TextSpan(
+                  text: ' *',
+                  style: TextStyle(
+                    color: Colors.red,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        GestureDetector(
+          onTap: () {
+            _showSignupMultiSelectSheet(
+              context: context,
+              title: label,
+              items: items,
+              initial: Set<String>.from(selected),
+              onDone: onChanged,
+            );
+          },
+          child: InputDecorator(
+            decoration: InputDecoration(
+              hintText: display == null ? hint : null,
+              hintStyle: AppTextStyles.montserratRegular.copyWith(
+                fontSize: 14,
+                color: AppColors.lightGrey,
+              ),
+              filled: true,
+              fillColor: AppColors.white,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 14,
+              ),
+              suffixIcon: const Icon(
+                Icons.keyboard_arrow_down,
+                color: AppColors.black,
+              ),
+              enabledBorder: _signupFieldBorder.copyWith(
+                borderSide: BorderSide(
+                  color: hasError ? Colors.red : const Color(0xFF1A1A1A),
+                  width: 1,
+                ),
+              ),
+              focusedBorder: _signupFieldBorder.copyWith(
+                borderSide: BorderSide(
+                  color: hasError ? Colors.red : const Color(0xFF1A1A1A),
+                  width: 1,
+                ),
+              ),
+              disabledBorder: _signupFieldBorder,
+              errorBorder: _signupFieldBorder.copyWith(
+                borderSide: const BorderSide(color: Colors.red, width: 1),
+              ),
+              focusedErrorBorder: _signupFieldBorder.copyWith(
+                borderSide: const BorderSide(color: Colors.red, width: 1),
+              ),
+            ),
+            child: Text(
+              display ?? '',
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyles.montserratSemiBold.copyWith(
+                fontSize: 14,
+                color: display == null ? AppColors.lightGrey : AppColors.black,
+              ),
+            ),
+          ),
+        ),
+        if (errorText != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              errorText,
+              style: const TextStyle(color: Colors.red, fontSize: 12),
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+Future<void> _showSignupMultiSelectSheet({
+  required BuildContext context,
+  required String title,
+  required List<String> items,
+  required Set<String> initial,
+  required ValueChanged<Set<String>> onDone,
+}) async {
+  final draft = Set<String>.from(initial);
+
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) {
+      return StatefulBuilder(
+        builder: (context, setModalState) {
+          return Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom,
+            ),
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Select one or more',
+                      style: AppTextStyles.montserratRegular.copyWith(
+                        fontSize: 13,
+                        color: AppColors.lightGrey,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ...items.map(
+                      (option) => CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: draft.contains(option),
+                        title: Text(
+                          option,
+                          style: AppTextStyles.montserratSemiBold.copyWith(
+                            fontSize: 14,
+                          ),
+                        ),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        activeColor: AppColors.main,
+                        onChanged: (checked) {
+                          setModalState(() {
+                            if (checked == true) {
+                              draft.add(option);
+                            } else {
+                              draft.remove(option);
+                            }
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 48,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          onDone(Set<String>.from(draft));
+                          Navigator.pop(sheetContext);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.main,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: const RoundedRectangleBorder(
+                            borderRadius: BorderRadius.zero,
+                          ),
+                        ),
+                        child: Text(
+                          'Done',
+                          style: AppTextStyles.montserratSemiBold.copyWith(
+                            fontSize: 15,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+}
+
 /// Signup screen password field with the same styling as [buildSignupTextField].
 Widget buildSignupPasswordField({
   required String label,
@@ -581,6 +796,8 @@ Widget buildRoundedDropdown({
   required Function(String?) onChanged,
   bool enabled = true,
   String? errorText, // <-- NEW
+  /// Fetched when the user opens the sheet (e.g. opportunity accounts).
+  Future<List<String>> Function()? loadItemsOnOpen,
 }) {
   return Padding(
     padding: const EdgeInsets.only(bottom: 16),
@@ -588,16 +805,24 @@ Widget buildRoundedDropdown({
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         GestureDetector(
-          onTap: enabled ? () {
-            _showSearchableDropdown(
-              context: context,
-              title: label,
-              items: items,
-              onSelected: (selectedValue) {
-                onChanged(selectedValue);
-              },
-            );
-          } : null,
+          onTap: enabled
+              ? () async {
+                  var list = items;
+                  if (loadItemsOnOpen != null) {
+                    list = await loadItemsOnOpen();
+                  }
+                  if (!context.mounted) return;
+                  if (list.isEmpty) return;
+                  await _showSearchableDropdown(
+                    context: context,
+                    title: label,
+                    items: list,
+                    onSelected: (selectedValue) {
+                      onChanged(selectedValue);
+                    },
+                  );
+                }
+              : null,
           child: InputDecorator(
             decoration: InputDecoration(
               labelText: label,
