@@ -13,7 +13,7 @@ import 'package:mprs_android/widget/common_appbar.dart';
 
 enum BookingScreenMode { book, shipments }
 
-enum _InProgressQuoteFilter { all, draft, accepted }
+enum _InProgressQuoteFilter { all, presented, draft, accepted }
 
 class BookingScreen extends StatefulWidget {
   final BookingScreenMode mode;
@@ -363,6 +363,9 @@ class _BookingScreenState extends State<BookingScreen>
           switch (filter) {
             case _InProgressQuoteFilter.all:
               return SavedQuotationsModel.isQuotationsTabStatus(status);
+            case _InProgressQuoteFilter.presented:
+              if (!_isRealInProgressQuote(booking, ctrl)) return false;
+              return SavedQuotationsModel.isPendingStatus(status);
             case _InProgressQuoteFilter.draft:
               if (!_isRealInProgressQuote(booking, ctrl)) return false;
               return SavedQuotationsModel.isDraftStatus(status);
@@ -409,6 +412,7 @@ class _BookingScreenState extends State<BookingScreen>
     final size = _quoteSizeLabel(booking, ctrl);
     final validTill = _quoteValidTill(booking, ctrl);
     final price = _quotePriceLabel(booking, ctrl);
+    final showOtherCharges = _quoteShowsOtherCharges(booking, ctrl);
     final status = _quoteStatus(booking, ctrl);
     final route = [
       if (pol.isNotEmpty) pol,
@@ -534,6 +538,18 @@ class _BookingScreenState extends State<BookingScreen>
                                     color: _navy,
                                   ),
                                 ),
+                                if (showOtherCharges) ...[
+                                  const SizedBox(height: 2),
+                                  const Text(
+                                    '+ other applicable charges',
+                                    textAlign: TextAlign.end,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF667085),
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                           ],
@@ -593,10 +609,25 @@ class _BookingScreenState extends State<BookingScreen>
     return Records.formatListDate(iso);
   }
 
+  bool _quoteShowsOtherCharges(Records booking, BookingController ctrl) {
+    final id = booking.id?.toString().trim() ?? '';
+    return ctrl.inProgressAdminQuoteById[id]?.oceanFreightTotal != null;
+  }
+
   String _quotePriceLabel(Records booking, BookingController ctrl) {
-    if (booking.displayAmount != '—') return booking.displayAmount;
     final id = booking.id?.toString().trim() ?? '';
     final seed = ctrl.inProgressAdminQuoteById[id];
+    final ocean = seed?.oceanFreightTotal;
+    if (ocean != null) {
+      final currency =
+          (seed?.oceanFreightCurrency ?? seed?.currencyIsoCode ?? '').trim();
+      final text =
+          ocean == ocean.roundToDouble()
+              ? ocean.round().toString()
+              : ocean.toString();
+      return currency.isEmpty ? text : '$currency $text';
+    }
+    if (booking.displayAmount != '—') return booking.displayAmount;
     final price = seed?.totalPrice;
     if (price != null) {
       final currency = seed?.currencyIsoCode?.trim() ?? '';
@@ -622,7 +653,7 @@ class _BookingScreenState extends State<BookingScreen>
       background = _greenBg;
       foreground = _greenText;
     } else if (SavedQuotationsModel.isPendingStatus(status)) {
-      label = 'Pending';
+      label = 'Presented';
       background = const Color(0xFFFFF4E5);
       foreground = const Color(0xFFB45309);
     } else if (SavedQuotationsModel.isDraftStatus(status)) {
@@ -767,6 +798,7 @@ class _BookingScreenState extends State<BookingScreen>
                       child: Text(
                         switch (filter) {
                           _InProgressQuoteFilter.all => 'All',
+                          _InProgressQuoteFilter.presented => 'Presented',
                           _InProgressQuoteFilter.draft => 'Draft',
                           _InProgressQuoteFilter.accepted => 'Accepted',
                         },
@@ -1204,6 +1236,11 @@ class _BookingScreenState extends State<BookingScreen>
     switch (filter) {
       case _InProgressQuoteFilter.all:
         message = 'No Quotations';
+        actionLabel = 'Ship rates';
+        onAction = _navigateToSearchRates;
+        break;
+      case _InProgressQuoteFilter.presented:
+        message = 'No Presented Quotes';
         actionLabel = 'Ship rates';
         onAction = _navigateToSearchRates;
         break;

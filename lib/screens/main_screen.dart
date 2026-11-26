@@ -151,7 +151,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       }
       if (index == MainTabs.book) {
         _bookTab = 1;
-        _bookQuoteFilter = 1;
+        _bookQuoteFilter = 2;
       }
       if (index == MainTabs.track) _shipmentsTab = null;
       _navigatorKeys[index] = GlobalKey<NavigatorState>();

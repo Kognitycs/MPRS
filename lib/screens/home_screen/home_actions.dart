@@ -106,7 +106,7 @@ class HomeActions {
         const MainTabRequest(
           index: MainTabs.book,
           bookTab: 1,
-          bookQuoteFilter: 1,
+          bookQuoteFilter: 2,
         ),
       );
       return;

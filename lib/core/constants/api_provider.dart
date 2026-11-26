@@ -356,7 +356,9 @@ class ApiProvider {
       return DataResponse(success: true, message: '', body: []);
     }
 
-    final url = ApiConstants.userQuotes(accountId: portfolioList ? null : accountId);
+    final url = ApiConstants.userQuotes(
+      accountId: portfolioList ? null : accountId,
+    );
 
     ApiRequest apiRequest = ApiRequest(url: url, method: DioMethod.get);
 
@@ -367,7 +369,9 @@ class ApiProvider {
     try {
       if (isInternal) {
         final quotes = await fetchRmsAppQuotationsForRole();
-        debugPrint('✅ Internal quotations: ${quotes.length} quotes (portfolio)');
+        debugPrint(
+          '✅ Internal quotations: ${quotes.length} quotes (portfolio)',
+        );
         return DataResponse(success: true, message: '', body: quotes);
       }
 
@@ -407,7 +411,11 @@ class ApiProvider {
       );
     } catch (e) {
       debugPrint('❌ API PROVIDER ERROR: $e');
-      return DataResponse(message: userFacingErrorMessage(), success: false, body: []);
+      return DataResponse(
+        message: userFacingErrorMessage(),
+        success: false,
+        body: [],
+      );
     }
   }
 
@@ -426,13 +434,13 @@ class ApiProvider {
 
     final request = _fetchAdminAppCreatedQuotationsUncached();
     _appCreatedQuotesInFlight = request;
-  try {
-    return await request;
-  } finally {
-    if (identical(_appCreatedQuotesInFlight, request)) {
-      _appCreatedQuotesInFlight = null;
+    try {
+      return await request;
+    } finally {
+      if (identical(_appCreatedQuotesInFlight, request)) {
+        _appCreatedQuotesInFlight = null;
+      }
     }
-  }
   }
 
   Future<List<SavedQuotationsModel>>
@@ -475,19 +483,95 @@ class ApiProvider {
     return result;
   }
 
-  /// RMS opportunities from the app — all accounts for Admin, OwnerId portfolio
-  /// for Internal.
+  /// Admin: RMS-app quotes. Internal: every quote on the OwnerId portfolio,
+  /// not only opportunities created in the app.
   Future<List<SavedQuotationsModel>> fetchRmsAppQuotationsForRole({
     Set<String>? portfolioIds,
   }) async {
-    final all = await fetchAdminAppCreatedQuotations();
-    if (AuthDataHelper.isAdminUser()) return all;
-    if (AuthDataHelper.isInternalUser()) {
+    if (AuthDataHelper.getUserType().toLowerCase().trim() == 'internal') {
       final ids =
           portfolioIds ?? await SalesAccountDirectory.portfolioAccountIdSet();
-      return SalesAccountDirectory.filterQuotesToPortfolio(all, ids);
+      return _fetchQuotesByAccountIds(ids);
     }
-    return all;
+    return fetchAdminAppCreatedQuotations();
+  }
+
+  Future<List<SavedQuotationsModel>> _fetchQuotesByAccountIds(
+    Set<String> accountIds,
+  ) async {
+    final ids =
+        accountIds.map((id) => id.trim()).where((id) => id.isNotEmpty).toList();
+    if (ids.isEmpty) return [];
+
+    final byId = <String, SavedQuotationsModel>{};
+    const chunkSize = 40;
+    for (var i = 0; i < ids.length; i += chunkSize) {
+      final batch = ids.skip(i).take(chunkSize).toList();
+      try {
+        final response = await _baseClient.handleRequest(
+          ApiRequest(
+            url: ApiConstants.quotesByAccountIds(batch),
+            method: DioMethod.get,
+          ),
+        );
+        for (final quote in _parseSavedQuotesList(response)) {
+          final id = quote.id?.trim() ?? '';
+          if (id.isEmpty || quote.isTestQuoteData) continue;
+          byId[id] = SavedQuotationsModel.merge([byId[id], quote]) ?? quote;
+        }
+      } catch (e) {
+        debugPrint('⚠️ Internal portfolio quotes failed: $e');
+      }
+    }
+
+    final quotes = SavedQuotationsModel.sortNewestFirst(byId.values.toList());
+    final open =
+        quotes
+            .where((q) => SavedQuotationsModel.isDraftStatus(q.status))
+            .length;
+    final accepted =
+        quotes
+            .where((q) => SavedQuotationsModel.isAcceptedStatus(q.status))
+            .length;
+    debugPrint(
+      '✅ Internal portfolio quotes: ${quotes.length} '
+      '(open=$open, accepted=$accepted)',
+    );
+    return quotes;
+  }
+
+  /// Orders for the internal user's accounts, including ones not created in the app.
+  Future<List<booking.Records>> fetchPortfolioOrders(
+    Set<String> accountIds,
+  ) async {
+    final ids =
+        accountIds.map((id) => id.trim()).where((id) => id.isNotEmpty).toList();
+    if (ids.isEmpty) return [];
+
+    final byId = <String, booking.Records>{};
+    const chunkSize = 40;
+    for (var i = 0; i < ids.length; i += chunkSize) {
+      final batch = ids.skip(i).take(chunkSize).toList();
+      try {
+        final response = await _baseClient.handleRequest(
+          ApiRequest(
+            url: ApiConstants.ordersByAccountIds(batch),
+            method: DioMethod.get,
+          ),
+        );
+        for (final order in _parseBookingRecordsList(response)) {
+          final id = order.id?.toString().trim() ?? '';
+          if (id.isEmpty) continue;
+          byId[id] = order;
+        }
+      } catch (e) {
+        debugPrint('⚠️ Portfolio orders failed: $e');
+      }
+    }
+
+    final orders = booking.Records.sortNewestFirst(byId.values.toList());
+    debugPrint('✅ Portfolio orders: ${orders.length}');
+    return orders;
   }
 
   /// Admin Booked tab: confirmed orders on RMS app opportunities only.
@@ -541,9 +625,10 @@ class ApiProvider {
     String logLabel = 'Admin',
   }) async {
     final bookedQuoteIds = await _fetchBookedQuoteIds();
-    var merged = quotesSource != null
-        ? await quotesSource()
-        : await fetchAdminAppCreatedQuotations();
+    var merged =
+        quotesSource != null
+            ? await quotesSource()
+            : await fetchAdminAppCreatedQuotations();
     if (filter != null) {
       merged = filter(merged);
     }
@@ -573,6 +658,7 @@ class ApiProvider {
       quoteById: adminQuoteById,
       shipmentById: shipmentById,
     );
+    await _applyOceanFreightTotals(adminQuoteById);
 
     final records = booking.Records.sortNewestFirst(
       SavedQuotationsModel.sortNewestFirst(adminQuoteById.values.toList())
@@ -688,6 +774,7 @@ class ApiProvider {
       quoteById: quoteById,
       shipmentById: shipmentById,
     );
+    await _applyOceanFreightTotals(quoteById);
 
     final records = booking.Records.sortNewestFirst(
       shipmentById.values
@@ -863,6 +950,16 @@ class ApiProvider {
             .toSet();
       }
 
+      if (AuthDataHelper.getUserType().toLowerCase().trim() == 'internal') {
+        final portfolioIds =
+            await SalesAccountDirectory.portfolioAccountIdSet();
+        final orders = await fetchPortfolioOrders(portfolioIds);
+        return orders
+            .map((o) => o.quoteId?.toString().trim() ?? '')
+            .where((id) => id.isNotEmpty)
+            .toSet();
+      }
+
       final resolvedAccountId = accountId?.trim() ?? _accountId();
       if (resolvedAccountId.isEmpty) return {};
 
@@ -963,6 +1060,48 @@ class ApiProvider {
     }
   }
 
+  /// `PricebookEntry.Id` → `MPRS_Currency__c` (else `CurrencyIsoCode`).
+  Future<Map<String, String>> fetchPricebookEntryCurrencies(
+    List<String> pricebookEntryIds,
+  ) async {
+    final ids =
+        pricebookEntryIds
+            .map((id) => id.trim())
+            .where((id) => id.isNotEmpty)
+            .toSet()
+            .toList();
+    if (ids.isEmpty) return const {};
+
+    try {
+      final response = await _baseClient.handleRequest(
+        ApiRequest(
+          url: ApiConstants.pricebookEntryCurrenciesByIds(ids),
+          method: DioMethod.get,
+        ),
+      );
+      final records = _extractSavedQuotesRawList(response);
+      final currencies = <String, String>{};
+      for (final item in records) {
+        if (item is! Map) continue;
+        final map = Map<String, dynamic>.from(item);
+        final id = map['Id']?.toString().trim() ?? '';
+        final currency =
+            map['MPRS_Currency__c']?.toString().trim().isNotEmpty == true
+                ? map['MPRS_Currency__c'].toString().trim()
+                : map['CurrencyIsoCode']?.toString().trim() ?? '';
+        if (id.isEmpty || currency.isEmpty) continue;
+        currencies[id] = currency.toUpperCase();
+      }
+      debugPrint(
+        '💱 Pricebook entry currencies: ${currencies.length}/${ids.length}',
+      );
+      return currencies;
+    } catch (e) {
+      debugPrint('⚠️ Pricebook entry currency fetch failed: $e');
+      return const {};
+    }
+  }
+
   Future<SavedQuotationsModel?> _fetchContainerFieldsFromPricebookEntry(
     String pricebookEntryId,
   ) async {
@@ -1014,6 +1153,63 @@ class ApiProvider {
       return SavedQuotationsModel(containerSize: fromEntry!.containerSize);
     }
     return null;
+  }
+
+  /// Ocean freight sell × quantity for quotation list cards.
+  Future<void> _applyOceanFreightTotals(
+    Map<String, SavedQuotationsModel> quoteById,
+  ) async {
+    final ids =
+        quoteById.keys
+            .map((id) => id.trim())
+            .where((id) => id.isNotEmpty)
+            .toList();
+    if (ids.isEmpty) return;
+
+    const chunkSize = 25;
+    for (var i = 0; i < ids.length; i += chunkSize) {
+      final batch = ids.skip(i).take(chunkSize).toList();
+      try {
+        final response = await _baseClient.handleRequest(
+          ApiRequest(
+            url: ApiConstants.quoteLineItemsByQuoteIds(batch),
+            method: DioMethod.get,
+          ),
+        );
+        final raw = _extractSavedQuotesRawList(response);
+        final byQuote = <String, List<GetQuoteDetailModel>>{};
+        for (final row in raw) {
+          if (row is! Map) continue;
+          final line = GetQuoteDetailModel.fromJson(
+            Map<String, dynamic>.from(row),
+          );
+          final quoteId = line.quoteId?.trim() ?? '';
+          if (quoteId.isEmpty) continue;
+          byQuote.putIfAbsent(quoteId, () => []).add(line);
+        }
+
+        for (final entry in byQuote.entries) {
+          final quote = quoteById[entry.key];
+          if (quote == null) continue;
+          final ocean =
+              entry.value.where((item) {
+                final name =
+                    (item.product ?? item.description ?? '').toUpperCase();
+                return name.contains('OCEAN FREIGHT');
+              }).toList();
+          if (ocean.isEmpty) continue;
+          quote.oceanFreightTotal = ocean.fold<double>(
+            0,
+            (sum, item) => sum + item.lineAmountByFinalSell,
+          );
+          final currency = ocean.first.displayCurrency.trim();
+          quote.oceanFreightCurrency =
+              currency.isNotEmpty ? currency : quote.currencyIsoCode;
+        }
+      } catch (e) {
+        debugPrint('⚠️ Ocean freight totals failed: $e');
+      }
+    }
   }
 
   /// Fills container type/size from quote/line when list APIs omit them.
@@ -1605,7 +1801,11 @@ class ApiProvider {
       return DataResponse(message: message, success: false, body: []);
     } catch (e) {
       debugPrint('❌ fetchOrderDocuments error: $e');
-      return DataResponse(message: userFacingErrorMessage(), success: false, body: []);
+      return DataResponse(
+        message: userFacingErrorMessage(),
+        success: false,
+        body: [],
+      );
     }
   }
 
@@ -2239,7 +2439,11 @@ class ApiProvider {
       return DataResponse(message: message, success: false, body: []);
     } catch (e) {
       debugPrint('❌ fetchQuotePdfs error: $e');
-      return DataResponse(message: userFacingErrorMessage(), success: false, body: []);
+      return DataResponse(
+        message: userFacingErrorMessage(),
+        success: false,
+        body: [],
+      );
     }
   }
 
@@ -2359,7 +2563,11 @@ class ApiProvider {
         return list.map((item) => BookingItem.fromJson(item)).toList();
       });
     } catch (e) {
-      return DataResponse(message: userFacingErrorMessage(), success: false, body: []);
+      return DataResponse(
+        message: userFacingErrorMessage(),
+        success: false,
+        body: [],
+      );
     }
   }
 
@@ -2462,7 +2670,11 @@ class ApiProvider {
       );
     } catch (e) {
       debugPrint('❌ fetchQuoteHeader error: $e');
-      return DataResponse(message: userFacingErrorMessage(), success: false, body: header);
+      return DataResponse(
+        message: userFacingErrorMessage(),
+        success: false,
+        body: header,
+      );
     }
   }
 

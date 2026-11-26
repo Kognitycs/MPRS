@@ -66,6 +66,8 @@ class ApiConstants {
   static String get changePassword => '$baseUrl/auth/change-password';
   static String get deleteAccount => '$baseUrl/auth/account';
 
+  static String get salespersons => '$baseUrl/auth/salespersons';
+
   static String salespersonsByState(String state) =>
       '$baseUrl/auth/salespersons?state=${Uri.encodeQueryComponent(state.trim())}';
 
@@ -209,6 +211,11 @@ class ApiConstants {
   /// Salesforce accounts for the logged-in internal user's salesperson (OwnerId).
   static String get opportunityAccounts => '$baseUrl/user/opportunity/accounts';
 
+  /// Every Salesforce account (admin Search Rates). No user list.
+  static String get allSalesforceAccounts =>
+      '$baseUrl/user/getData?sfQuery='
+      'SELECT+Id,Name+FROM+Account+ORDER+BY+Name';
+
   /// Account rows owned by Salesforce User Id (005…).
   static String salesforceAccountsByOwnerId(String ownerId) {
     final id = ownerId.trim();
@@ -267,6 +274,72 @@ class ApiConstants {
       'Opportunity.Name,Opportunity.Opp_From_RMS_App__c,Account.Name,AccountId '
       'FROM+Quote+ORDER+BY+CreatedDate+DESC';
 
+  /// Orders on the given accounts. No `Opp_From_RMS_App__c` filter.
+  static String ordersByAccountIds(List<String> accountIds) {
+    final quoted = _soqlIdList(accountIds);
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+Id,OrderNumber,QuoteId,AccountId,Opportunity.Name,'
+        'Opportunity.AccountId,Origin_Port__r.Name,Destination_Port__r.Name,'
+        'Vessel_Name__c,Voyage_Number__c,Tracking_Status__c,'
+        'OrderReferenceNumber,Container_Number__c,Booked_Date__c,'
+        'Picked_Up_Date__c,Gated_In_Date__c,On_Board_Date__c,'
+        'Vessel_Sailed_Date__c,Discharged_Date__c,'
+        'Transshipment_Loaded_Date__c,Transshipment_Discharge_Date__c,'
+        'Cleared_Date__c,Returned_Date__c,Custom_Status__c,'
+        'Arrival_Date__c,Departure_Date__c,TotalAmount,CurrencyIsoCode,'
+        'CreatedDate '
+        '+FROM+Order+WHERE+Opportunity.AccountId+IN+($quoted) '
+        "+AND+Opportunity.StageName!='Closed+Lost' "
+        '+ORDER+BY+Booked_Date__c+DESC+NULLS+LAST';
+  }
+
+  /// Quote id and status only — home counts, not the full quote list.
+  static String quoteStatusesByAccountIds(List<String> accountIds) {
+    final quoted = _soqlIdList(accountIds);
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+Id,Name,Status+FROM+Quote+WHERE+AccountId+IN+($quoted)';
+  }
+
+  /// Order ids only — home order count, not the full order payload.
+  static String orderIdsByAccountIds(List<String> accountIds) {
+    final quoted = _soqlIdList(accountIds);
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+Id,OrderNumber+FROM+Order'
+        '+WHERE+Opportunity.AccountId+IN+($quoted)'
+        "+AND+Opportunity.StageName!='Closed+Lost'"
+        '+AND+OrderNumber!=null';
+  }
+
+  /// Quotes on the given accounts. No `Opp_From_RMS_App__c` filter.
+  static String quotesByAccountIds(List<String> accountIds) {
+    final quoted = _soqlIdList(accountIds);
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+Id,Name,Status,ExpirationDate,GrandTotal,CurrencyIsoCode,'
+        'CreatedDate,AccountId,Origin_Port__r.Name,Destination_Port__r.Name,'
+        'Lead_Type__c,Goods_Value__c,Net_Weight_KGS__c,Gross_Weight_KGS__c,'
+        '$quoteContainerSelectFields,'
+        'Opportunity.Name,Account.Name '
+        '+FROM+Quote+WHERE+AccountId+IN+($quoted)'
+        '+ORDER+BY+CreatedDate+DESC';
+  }
+
+  /// Opportunities on the given accounts, including ones not created in the app.
+  static String opportunitiesByAccountIds(List<String> accountIds) {
+    final quoted = _soqlIdList(accountIds);
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+Id,AccountId,'
+        'Origin_Port__c,Origin_Port__r.Name,'
+        'Destination_Port__c,Destination_Port__r.Name '
+        '+FROM+Opportunity+WHERE+AccountId+IN+($quoted)';
+  }
+
+  static String _soqlIdList(List<String> ids) {
+    return ids
+        .map((id) => "'${id.trim().replaceAll("'", '')}'")
+        .where((id) => id.length > 2)
+        .join(',');
+  }
+
   /// Opportunities created from the app. One query feeds both the total
   /// count and the most-searched routes. [accountId] limits the rows to one
   /// account; omit it for every account.
@@ -293,6 +366,18 @@ class ApiConstants {
   }
 
   static String get quoteDetails => '$baseUrl/user/quote/line?quote_id=';
+
+  /// Line items for several quotes, used to show ocean freight on list cards.
+  static String quoteLineItemsByQuoteIds(List<String> ids) {
+    final quoted = ids
+        .map((id) => "'${id.trim().replaceAll("'", '')}'")
+        .where((id) => id.length > 2)
+        .join(',');
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+QuoteId,Quantity,UnitPrice,ListPrice,TotalPrice,Description,'
+        'Product2.Name,CurrencyIsoCode'
+        '+FROM+QuoteLineItem+WHERE+QuoteId+IN+($quoted)';
+  }
   static String pdfForQuote(String quoteId) =>
       '$baseUrl/user/pdfForQuote?quote_id=${Uri.encodeQueryComponent(quoteId.trim())}';
 
@@ -320,6 +405,17 @@ class ApiConstants {
     return '$baseUrl/user/getData?sfQuery='
         'SELECT+Id,$quoteContainerSelectFields,Lead_Type__c'
         "+FROM+Quote+WHERE+Id='$quoteId'";
+  }
+
+  /// Charge currency (`MPRS_Currency__c`) for the pricebook entries on a quote.
+  static String pricebookEntryCurrenciesByIds(List<String> ids) {
+    final quoted = ids
+        .map((id) => "'${id.trim().replaceAll("'", '')}'")
+        .where((id) => id.length > 2)
+        .join(',');
+    return '$baseUrl/user/getData?sfQuery='
+        'SELECT+Id,MPRS_Currency__c,CurrencyIsoCode'
+        '+FROM+PricebookEntry+WHERE+Id+IN+($quoted)';
   }
 
   /// Container size/type from ocean-freight pricebook entry.

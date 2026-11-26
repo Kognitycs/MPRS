@@ -144,6 +144,10 @@ class _AddUserScreenState extends State<AddUserScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _prefillFromLoggedInInternalCreator();
       });
+    } else if (_externalOnly) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadSalespersons();
+      });
     }
   }
 
@@ -201,28 +205,14 @@ class _AddUserScreenState extends State<AddUserScreen> {
         '(backend should return state/stateCode on auth/profile). '
         'prefs region=${AuthDataHelper.getRegion()}',
       );
+    } else {
       setState(() {
-        _creatorPrefillLoading = false;
-        _creatorSalespersonLocked = false;
-        if (creatorId.isNotEmpty) _selectedSalespersonId = creatorId;
-        if (creatorName.isNotEmpty && creatorId.isNotEmpty) {
-          _salespersons = [
-            SalespersonOption(
-              id: creatorId,
-              name: creatorName,
-            ),
-          ];
-        }
+        _salespersonState = stateName;
+        branchStateError = null;
       });
-      return;
     }
 
-    setState(() {
-      _salespersonState = stateName;
-      branchStateError = null;
-    });
-
-    await _loadSalespersons(stateName);
+    await _loadSalespersons();
     if (!mounted) return;
 
     setState(() {
@@ -370,6 +360,36 @@ class _AddUserScreenState extends State<AddUserScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+
+              if (!_externalOnly)
+                buildRoundedDropdownWithArrow(
+                  label: "Select role",
+                  hint: "Select role",
+                  isRequired: true,
+                  items: addUserRoles,
+                  value: userRoleType,
+                  onChanged: (value) {
+                    setState(() {
+                      userRoleType = value;
+                      userRoleTypeError = null;
+                      if (value != 'Internal') {
+                        _sfAccounts = [];
+                        _taggedSalesforceAccountId = null;
+                        _sfAccountsError = null;
+                      }
+                      if (value != 'External') {
+                        _salespersonState = null;
+                        _salespersons = [];
+                        _selectedSalespersonId = null;
+                      }
+                    });
+                    if (value == 'External') {
+                      _loadSalespersons();
+                    }
+                  },
+                  errorText: userRoleTypeError,
+                  context: context,
+                ),
 
               buildUserTextField(
                 label: "First Name",
@@ -529,33 +549,6 @@ class _AddUserScreenState extends State<AddUserScreen> {
                 },
                 errorText: gstinError,
               ),
-
-              if (!_externalOnly)
-                buildRoundedDropdownWithArrow(
-                  label: "Select role",
-                  hint: "Select role",
-                  isRequired: true,
-                  items: addUserRoles,
-                  value: userRoleType,
-                  onChanged: (value) {
-                    setState(() {
-                      userRoleType = value;
-                      userRoleTypeError = null;
-                      if (value != 'Internal') {
-                        _sfAccounts = [];
-                        _taggedSalesforceAccountId = null;
-                        _sfAccountsError = null;
-                      }
-                      if (value != 'External') {
-                        _salespersonState = null;
-                        _salespersons = [];
-                        _selectedSalespersonId = null;
-                      }
-                    });
-                  },
-                  errorText: userRoleTypeError,
-                  context: context,
-                ),
 
               if (_externalOnly || userRoleType == 'External') ...[
                 const SizedBox(height: 16),
@@ -803,7 +796,7 @@ class _AddUserScreenState extends State<AddUserScreen> {
           hint:
               _creatorPrefillLoading
                   ? 'Loading your state…'
-                  : 'Select state (to load sales persons)',
+                  : 'Select state',
           items: _indianStateItemsForDropdown(),
           value:
               _salespersonState != null &&
@@ -818,12 +811,7 @@ class _AddUserScreenState extends State<AddUserScreen> {
                     setState(() {
                       _salespersonState = value;
                       branchStateError = null;
-                      _selectedSalespersonId = null;
-                      _salespersons = [];
                     });
-                    if (value != null && value.trim().isNotEmpty) {
-                      _loadSalespersons(value);
-                    }
                   },
           errorText: _usesSignupForCreate ? branchStateError : null,
           context: context,
@@ -833,13 +821,12 @@ class _AddUserScreenState extends State<AddUserScreen> {
             padding: EdgeInsets.symmetric(vertical: 10),
             child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
           )
-        else if ((_salespersonState != null && _salespersonState!.isNotEmpty) ||
-            (_creatorOwnsSalesperson && _salespersons.isNotEmpty))
+        else
           buildRoundedDropdown(
             label: 'Sales person',
             hint:
                 _salespersons.isEmpty
-                    ? 'No sales persons for this state'
+                    ? 'No sales persons'
                     : (_creatorSalespersonLocked
                         ? 'Your name (assigned)'
                         : 'Select sales person (Optional)'),
@@ -889,9 +876,9 @@ class _AddUserScreenState extends State<AddUserScreen> {
     return null;
   }
 
-  Future<void> _loadSalespersons(String state) async {
+  Future<void> _loadSalespersons() async {
     setState(() => _salespersonsLoading = true);
-    final list = await SalespersonDirectory.loadByState(state);
+    final list = await SalespersonDirectory.loadAll();
     if (!mounted) return;
     setState(() {
       _salespersonsLoading = false;

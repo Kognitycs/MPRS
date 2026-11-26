@@ -248,8 +248,10 @@ class _GetQuoteScreenState extends State<GetQuoteScreen> {
   bool _isSubmitting = false;
   double? _confirmedSellTotal;
 
-  bool get _isInternalSalesUser =>
-      AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
+  bool get _isInternalSalesUser {
+    final type = AuthDataHelper.getUserType().toLowerCase().trim();
+    return type == 'internal' || AuthDataHelper.isAdminUser();
+  }
   String? polId;
   String? podId;
   List<IcdModel> icdList = [];

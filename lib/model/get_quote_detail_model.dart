@@ -112,6 +112,41 @@ class GetQuoteDetailModel {
   double get lineAmountByFinalSell =>
       sellingUnitPrice * (quantity ?? 1);
 
+  /// Set after the pricebook entry currency is loaded. Not part of the JSON.
+  String? chargeCurrencyOverride;
+
+  /// Charge currency. The quote header currency is only a fallback.
+  String get displayCurrency {
+    final override = chargeCurrencyOverride?.trim();
+    if (override != null && override.isNotEmpty) return override.toUpperCase();
+    final custom = mprsQliCurrency?.trim();
+    if (custom != null && custom.isNotEmpty) return custom.toUpperCase();
+    final iso = currencyIsoCode?.trim();
+    if (iso != null && iso.isNotEmpty) return iso.toUpperCase();
+    return '';
+  }
+
+  static String? _readChargeCurrency(Map<String, dynamic> json) {
+    String? pick(dynamic value) {
+      final text = value?.toString().trim() ?? '';
+      if (text.isEmpty) return null;
+      return text.toUpperCase();
+    }
+
+    final direct =
+        pick(json['MPRS_QLI_Currency__c']) ??
+        pick(json['currency']) ??
+        pick(json['Currency']) ??
+        pick(json['MPRS_Currency__c']);
+    if (direct != null) return direct;
+
+    final entry = json['PricebookEntry'];
+    if (entry is Map) {
+      return pick(entry['MPRS_Currency__c']) ?? pick(entry['CurrencyIsoCode']);
+    }
+    return null;
+  }
+
   static String? _readProductName(Map<String, dynamic> json) {
     final direct = json['Product__c'];
     if (direct != null && direct.toString().trim().isNotEmpty) {
@@ -195,7 +230,7 @@ class GetQuoteDetailModel {
       listPrice: (json['ListPrice'] as num?)?.toDouble(),
       subtotal: (json['Subtotal'] as num?)?.toDouble(),
       applicationMethod: json['Application_Method__c'],
-      mprsQliCurrency: json['MPRS_QLI_Currency__c'],
+      mprsQliCurrency: _readChargeCurrency(json),
       salesPrice: json['Sales_Price__c'],
       test: json['Test__c'],
       totalPriceCustom: json['Total_Price__c'],

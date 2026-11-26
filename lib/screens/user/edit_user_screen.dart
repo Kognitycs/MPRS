@@ -121,10 +121,7 @@ class _EditUserScreenState extends State<EditUserScreen> {
     if (_isExternalFamily) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         await _hydrateUserFromAdminList();
-        final state = _salespersonState?.trim() ?? '';
-        if (state.isNotEmpty) {
-          await _loadSalespersons(state);
-        }
+        await _loadSalespersons();
       });
     }
     if (userRoleType == 'Internal') {
@@ -333,10 +330,6 @@ class _EditUserScreenState extends State<EditUserScreen> {
           if (matches) {
             if (!mounted) return;
             setState(() => _applyUserToForm(row));
-            final state = _salespersonState?.trim() ?? '';
-            if (state.isNotEmpty) {
-              await _loadSalespersons(state);
-            }
             return;
           }
         }
@@ -817,12 +810,7 @@ class _EditUserScreenState extends State<EditUserScreen> {
           onChanged: (value) {
             setState(() {
               _salespersonState = value;
-              _selectedSalespersonId = null;
-              _salespersons = [];
             });
-            if (value != null && value.trim().isNotEmpty) {
-              _loadSalespersons(value);
-            }
           },
           context: context,
         ),
@@ -831,12 +819,12 @@ class _EditUserScreenState extends State<EditUserScreen> {
             padding: EdgeInsets.symmetric(vertical: 10),
             child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
           )
-        else if (_salespersonState != null && _salespersonState!.isNotEmpty)
+        else
           buildRoundedDropdown(
             label: 'Sales person',
             hint:
                 _salespersons.isEmpty
-                    ? 'No sales persons for this state'
+                    ? 'No sales persons'
                     : 'Select sales person',
             items: _salespersons.map((e) => e.name).toList(),
             value: _salespersonLabelForId(_selectedSalespersonId),
@@ -875,13 +863,13 @@ class _EditUserScreenState extends State<EditUserScreen> {
     return null;
   }
 
-  Future<void> _loadSalespersons(String state) async {
+  Future<void> _loadSalespersons() async {
     setState(() => _salespersonsLoading = true);
-    final list = await SalespersonDirectory.loadByState(state);
+    final list = await SalespersonDirectory.loadAll();
     if (!mounted) return;
 
     final merged = <SalespersonOption>[...list];
-  final storedId = _selectedSalespersonId?.trim();
+    final storedId = _selectedSalespersonId?.trim();
     if (storedId != null &&
         storedId.isNotEmpty &&
         !merged.any((e) => e.id == storedId)) {
@@ -892,7 +880,7 @@ class _EditUserScreenState extends State<EditUserScreen> {
           name: _storedSalespersonName?.trim().isNotEmpty == true
               ? _storedSalespersonName!.trim()
               : 'Assigned sales person',
-          state: state,
+          state: _salespersonState,
         ),
       );
     }

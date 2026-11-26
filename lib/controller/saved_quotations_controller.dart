@@ -194,6 +194,7 @@ class SavedQuotationsController extends GetxController {
 
       if (lineOk && lineBody != null) {
         bookingDetailItems = lineBody.lineItems;
+        await _applyChargeCurrencies(bookingDetailItems);
         debugPrint('✅ Quote line items: ${bookingDetailItems.length}');
       } else {
         bookingDetailItems = [];
@@ -247,6 +248,22 @@ class SavedQuotationsController extends GetxController {
       isDetailLoading = false;
       isPdfLoading = false;
       update();
+    }
+  }
+
+  Future<void> _applyChargeCurrencies(List<GetQuoteDetailModel> lines) async {
+    final ids = [
+      for (final line in lines)
+        if ((line.pricebookEntryId ?? '').trim().isNotEmpty)
+          line.pricebookEntryId!.trim(),
+    ];
+    if (ids.isEmpty) return;
+    final currencies = await ApiProvider().fetchPricebookEntryCurrencies(ids);
+    for (final line in lines) {
+      final id = line.pricebookEntryId?.trim() ?? '';
+      final currency = currencies[id];
+      if (currency == null || currency.isEmpty) continue;
+      line.chargeCurrencyOverride = currency;
     }
   }
 

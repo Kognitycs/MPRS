@@ -9,6 +9,7 @@ import 'package:mprs_android/core/constants/base_client.dart';
 import 'package:mprs_android/core/constants/port_preference_keys.dart';
 import 'package:mprs_android/core/utils/shared_preferences.dart';
 import 'package:mprs_android/model/get_booking_list_model_new.dart' as booking;
+import 'package:mprs_android/service/sales_account_directory.dart';
 import 'package:mprs_android/model/saved_quotations_model.dart';
 import 'package:get/get.dart';
 
@@ -257,7 +258,12 @@ class MostUsedPortsService {
       }
 
       try {
-        final orders = await ApiProvider().fetchAdminRmsBookedOrders();
+        final orders =
+            AuthDataHelper.getUserType().toLowerCase().trim() == 'internal'
+                ? await ApiProvider().fetchPortfolioOrders(
+                  await SalesAccountDirectory.portfolioAccountIdSet(),
+                )
+                : await ApiProvider().fetchAdminRmsBookedOrders();
         for (final o in orders) {
           addPair(
             pol: o.portOfLoadingC?.toString(),

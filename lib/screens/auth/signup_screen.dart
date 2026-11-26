@@ -115,6 +115,12 @@ class _SignupScreenState extends State<SignupScreen> {
   bool _salespersonsLoading = false;
   String? _selectedSalespersonId;
 
+  @override
+  void initState() {
+    super.initState();
+    _loadSalespersons();
+  }
+
   bool get _isMobileComplete =>
       RegExp(r'^[0-9]{10}$').hasMatch(mobileNumberController.text.trim());
 
@@ -140,11 +146,7 @@ class _SignupScreenState extends State<SignupScreen> {
         _showMobileOtp = false;
         mobileOtpError = null;
       });
-      showSnackBar(
-        context,
-        message,
-        backgroundColor: AppColors.green,
-      );
+      showSnackBar(context, message, backgroundColor: AppColors.green);
     } finally {
       await _phoneAuthService.signOut();
     }
@@ -167,10 +169,7 @@ class _SignupScreenState extends State<SignupScreen> {
           await _completePhoneVerification(result.autoVerifiedIdToken!);
         } catch (e) {
           if (!mounted) return;
-          showSnackBar(
-            context,
-            e.toString().replaceFirst('Exception: ', ''),
-          );
+          showSnackBar(context, e.toString().replaceFirst('Exception: ', ''));
         }
         return;
       }
@@ -567,7 +566,7 @@ class _SignupScreenState extends State<SignupScreen> {
                 context: context,
                 label: 'State',
                 isRequired: true,
-                hint: 'Select state (to load sales persons)',
+                hint: 'Select state',
                 items: indianStates,
                 value: _salespersonState,
                 errorText: stateError,
@@ -577,12 +576,7 @@ class _SignupScreenState extends State<SignupScreen> {
                     if (value != null && value.trim().isNotEmpty) {
                       stateError = null;
                     }
-                    _selectedSalespersonId = null;
-                    _salespersons = [];
                   });
-                  if (value != null && value.trim().isNotEmpty) {
-                    _loadSalespersons(value);
-                  }
                 },
               ),
               if (_salespersonsLoading)
@@ -596,14 +590,14 @@ class _SignupScreenState extends State<SignupScreen> {
                     ),
                   ),
                 )
-              else if (_salespersonState != null &&
-                  _salespersonState!.trim().isNotEmpty)
+              else
                 buildSignupDropdown(
                   context: context,
                   label: 'Sales person',
-                  hint: _salespersons.isEmpty
-                      ? 'No sales persons for this state'
-                      : 'Select sales person (Optional)',
+                  hint:
+                      _salespersons.isEmpty
+                          ? 'No sales persons'
+                          : 'Select sales person (Optional)',
                   items: _salespersons.map((e) => e.name).toList(),
                   value: _salespersonLabelForId(_selectedSalespersonId),
                   enabled: _salespersons.isNotEmpty,
@@ -944,9 +938,9 @@ class _SignupScreenState extends State<SignupScreen> {
     return null;
   }
 
-  Future<void> _loadSalespersons(String state) async {
+  Future<void> _loadSalespersons() async {
     setState(() => _salespersonsLoading = true);
-    final list = await SalespersonDirectory.loadByState(state);
+    final list = await SalespersonDirectory.loadAll();
     if (!mounted) return;
     setState(() {
       _salespersonsLoading = false;
@@ -1022,8 +1016,7 @@ class _SignupScreenState extends State<SignupScreen> {
           'extentionNumber': (user.extentionNumber ?? '').trim(),
           'address': (user.address ?? '').trim(),
           'country': CountryUtils.salesforceCountryCode(user.country),
-          'region':
-              CountryUtils.salesforceIndianStateCode(_salespersonState),
+          'region': CountryUtils.salesforceIndianStateCode(_salespersonState),
           'gstin': (user.gstin ?? '').trim(),
           'termsAccepted': 'true',
           'Active_RMS_User': 'false',
@@ -1104,15 +1097,12 @@ class _SignupScreenState extends State<SignupScreen> {
               : null;
 
       accountTypeError =
-          (_selectedAccountType == null ||
-                  _selectedAccountType!.trim().isEmpty)
+          (_selectedAccountType == null || _selectedAccountType!.trim().isEmpty)
               ? 'Please select an account type'
               : null;
 
       addressError =
-          addressController.text.trim().isEmpty
-              ? "Please enter street"
-              : null;
+          addressController.text.trim().isEmpty ? "Please enter street" : null;
 
       cityError =
           cityController.text.trim().isEmpty ? "Please enter city" : null;

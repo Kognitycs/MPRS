@@ -303,29 +303,6 @@ class BookingController extends GetxController {
     }
   }
 
-  Future<List<Records>> _fetchPortfolioAccountBookedRows(String accountId) async {
-    try {
-      final response = await BaseClient().handleRequest(
-        ApiRequest(
-          url: ApiConstants.userBookingsList(accountId),
-          method: DioMethod.get,
-        ),
-      );
-      if (response == null || response['status'] != 200) return [];
-      final rows = response['bookings'];
-      if (rows is! List) return [];
-      final parsed = <Records>[];
-      for (final item in rows) {
-        if (item is! Map) continue;
-        parsed.add(Records.fromJson(Map<String, dynamic>.from(item)));
-      }
-      return parsed;
-    } catch (e) {
-      debugPrint('⚠️ Bookings for account $accountId failed: $e');
-      return [];
-    }
-  }
-
   Future<void> _loadConfirmedBookingsForInternalPortfolio() async {
     final portfolioIds = await SalesAccountDirectory.portfolioAccountIdSet();
     if (portfolioIds.isEmpty) {
@@ -338,17 +315,13 @@ class BookingController extends GetxController {
     allBookings.clear();
     final seenOrderIds = <String>{};
 
-    final chunks = await Future.wait(
-      portfolioIds.map(_fetchPortfolioAccountBookedRows),
-    );
-    for (final rows in chunks) {
-      for (final booking in rows) {
-        if (!isBookedOrderRow(booking)) continue;
-        final orderId = booking.id?.toString().trim() ?? '';
-        if (orderId.isNotEmpty && !seenOrderIds.add(orderId)) continue;
-        filteredBookings.add(booking);
-        allBookings.add(booking);
-      }
+    final orders = await ApiProvider().fetchPortfolioOrders(portfolioIds);
+    for (final booking in orders) {
+      if (!isBookedOrderRow(booking)) continue;
+      final orderId = booking.id?.toString().trim() ?? '';
+      if (orderId.isNotEmpty && !seenOrderIds.add(orderId)) continue;
+      filteredBookings.add(booking);
+      allBookings.add(booking);
     }
 
     if (allBookings.isEmpty) {

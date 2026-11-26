@@ -20,13 +20,42 @@ class SalespersonOption {
   });
 }
 
-/// GET /auth/salespersons?state=… (public; used at signup and admin add user).
+/// GET /auth/salespersons (public; used at signup and admin add user).
 class SalespersonDirectory {
+  /// Every salesperson, not limited to one state.
+  static Future<List<SalespersonOption>> loadAll() async {
+    final direct = await _loadFromUrl(ApiConstants.salespersons);
+    if (direct.isNotEmpty) return direct;
+
+    final states = CountryUtils.getIndianStates();
+    final merged = <SalespersonOption>[];
+    final seen = <String>{};
+    const batchSize = 6;
+    for (var i = 0; i < states.length; i += batchSize) {
+      final batch = states.skip(i).take(batchSize).toList();
+      final results = await Future.wait(batch.map(loadByState));
+      for (final rows in results) {
+        for (final row in rows) {
+          if (seen.add(row.id)) merged.add(row);
+        }
+      }
+    }
+    merged.sort(
+      (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+    debugPrint('SalespersonDirectory: merged ${merged.length} across states');
+    return merged;
+  }
+
   static Future<List<SalespersonOption>> loadByState(String state) async {
     final trimmed = state.trim();
     if (trimmed.isEmpty) return const [];
+    final list = await _loadFromUrl(ApiConstants.salespersonsByState(trimmed));
+    debugPrint('SalespersonDirectory: loaded ${list.length} for $trimmed');
+    return list;
+  }
 
-    final url = ApiConstants.salespersonsByState(trimmed);
+  static Future<List<SalespersonOption>> _loadFromUrl(String url) async {
     debugPrint('SalespersonDirectory: GET $url');
 
     try {
@@ -55,7 +84,6 @@ class SalespersonDirectory {
       out.sort(
         (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
       );
-      debugPrint('SalespersonDirectory: loaded ${out.length} for $trimmed');
       return out;
     } catch (e, st) {
       debugPrint('SalespersonDirectory: $e\n$st');

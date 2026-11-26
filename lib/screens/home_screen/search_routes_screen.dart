@@ -43,8 +43,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   String _accountSearchQuery = '';
   final TextEditingController _accountSearchCtrl = TextEditingController();
 
-  bool get _picksAccount =>
-      AuthDataHelper.getUserType().toLowerCase().trim() == 'internal';
+  bool get _picksAccount {
+    final type = AuthDataHelper.getUserType().toLowerCase().trim();
+    return type == 'internal' || AuthDataHelper.isAdminUser();
+  }
 
   int? get _accountStep => _picksAccount ? 0 : null;
   int get _routeStep => _picksAccount ? 1 : 0;
@@ -86,7 +88,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
 
   Future<void> _loadSalesAccounts() async {
     setState(() => _salesAccountsLoading = true);
-    final result = await SalesAccountDirectory.loadForCurrentUser();
+    final result =
+        AuthDataHelper.isAdminUser()
+            ? await SalesAccountDirectory.loadAllAccounts()
+            : await SalesAccountDirectory.loadForCurrentUser();
     if (!mounted) return;
     setState(() {
       _salesAccounts = result.choices;
@@ -103,9 +108,11 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
   List<SalesAccountChoice> get _visibleSalesAccounts {
     final query = _accountSearchQuery.trim().toLowerCase();
     if (query.isEmpty) return _salesAccounts;
-    return _salesAccounts
-        .where((c) => c.name.toLowerCase().contains(query))
-        .toList();
+    return _salesAccounts.where((c) {
+      final name = c.name.toLowerCase();
+      final role = (c.userType ?? '').toLowerCase();
+      return name.contains(query) || role.contains(query);
+    }).toList();
   }
 
   @override
@@ -544,10 +551,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
           ),
         ),
         const SizedBox(height: 4),
-        const Text(
+        Text(
           'Optional. Select a customer account to create an opportunity and '
-          'continue to Price and Get a quote. Skip to search rates only.',
-          style: TextStyle(fontSize: 13, color: _muted, height: 1.35),
+              'continue to Price and Get a quote. Skip to search rates only.',
+          style: const TextStyle(fontSize: 13, color: _muted, height: 1.35),
         ),
         const SizedBox(height: 14),
         TextField(
@@ -584,7 +591,9 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
             padding: const EdgeInsets.symmetric(vertical: 16),
             child: Text(
               _accountSearchQuery.trim().isNotEmpty
-                  ? 'No accounts match your search.'
+                  ? 'No matches for your search.'
+                  : AuthDataHelper.isAdminUser()
+                  ? 'No accounts found.'
                   : 'No customer accounts for your OwnerId yet.',
               style: const TextStyle(fontSize: 13, color: _muted),
             ),
@@ -647,15 +656,20 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
                           color: _titleColor,
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        choice.customerTierLabel,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: _muted,
-                          fontWeight: FontWeight.w600,
+                      if (choice.userType?.trim().isNotEmpty == true ||
+                          !AuthDataHelper.isAdminUser()) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          (choice.userType?.trim().isNotEmpty == true)
+                              ? choice.userType!.trim()
+                              : choice.customerTierLabel,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: _muted,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),
@@ -2293,9 +2307,10 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
       backgroundColor: Colors.transparent,
       builder:
           (_) => _CommodityPickerSheet(
-            onSelected: (hsCode) {
+            onSelected: (hsCode, description) {
               controller.commodityCtrl.text = hsCode;
-              controller.commodityDisplay.value = hsCode;
+              controller.commodityDisplay.value =
+                  description.trim().isNotEmpty ? description.trim() : hsCode;
               controller.commodityError.value = null;
             },
           ),
@@ -2314,7 +2329,7 @@ class _SearchRouteScreenState extends State<SearchRouteScreen> {
 // Commodity picker bottom sheet with search + pagination
 // ─────────────────────────────────────────────────────────────────────────────
 class _CommodityPickerSheet extends StatefulWidget {
-  final ValueChanged<String> onSelected;
+  final void Function(String hsCode, String description) onSelected;
 
   const _CommodityPickerSheet({required this.onSelected});
 
@@ -2538,10 +2553,19 @@ class _CommodityPickerSheetState extends State<_CommodityPickerSheet> {
                           );
                         }
                         final item = _items[i];
-                        final hsCode = item['HS_Code__c'] as String? ?? '';
+                        final hsCode = item['HS_Code__c']?.toString().trim() ?? '';
+                        final description =
+                            item['description']?.toString().trim() ?? '';
+                        final label =
+                            description.isNotEmpty
+                                ? description
+                                : (item['Name']?.toString().trim().isNotEmpty ==
+                                        true
+                                    ? item['Name'].toString().trim()
+                                    : hsCode);
                         return ListTile(
                           title: Text(
-                            hsCode,
+                            label,
                             style: const TextStyle(
                               fontSize: 13,
                               color: Color(0xFF1A1A2E),
@@ -2553,7 +2577,7 @@ class _CommodityPickerSheetState extends State<_CommodityPickerSheet> {
                             size: 18,
                           ),
                           onTap: () {
-                            widget.onSelected(hsCode);
+                            widget.onSelected(hsCode, label);
                             Navigator.pop(context);
                           },
                           dense: true,

@@ -6,6 +6,7 @@ import 'package:mprs_android/core/auth_data_helper.dart';
 import 'package:mprs_android/core/constants/api_constants.dart';
 import 'package:mprs_android/core/constants/db_helper.dart';
 import 'package:mprs_android/core/utils/api_error_utils.dart';
+import 'package:mprs_android/model/all_users_response.dart';
 import 'package:mprs_android/model/common/user_data.dart';
 import 'package:mprs_android/model/saved_quotations_model.dart';
 import 'package:mprs_android/screens/user/user_cache.dart';
@@ -73,12 +74,16 @@ class SalesAccountChoice {
   /// True when [id] came from [ApiConstants.opportunityAccounts].
   final bool fromApi;
 
+  /// Salesforce Account Id when [id] is a user id (admin all-users list).
+  final String? salesforceAccountId;
+
   const SalesAccountChoice({
     required this.id,
     required this.name,
     this.isSelf = false,
     this.userType,
     this.fromApi = false,
+    this.salesforceAccountId,
   });
 
   String get customerTierLabel {
@@ -93,6 +98,10 @@ class SalesAccountChoice {
   /// Customer Salesforce account id for opportunities and quotes.
   String? get accountIdForApi {
     if (isSelf) return null;
+    if (salesforceAccountId != null) {
+      final tagged = salesforceAccountId!.trim();
+      return tagged.isEmpty ? null : tagged;
+    }
     final text = id.trim();
     return text.isEmpty ? null : text;
   }
@@ -110,25 +119,160 @@ class SalesAccountLoad {
 /// - **POST** `{ "email" }` — Accounts linked to **Contact.Email** (admin: prospective
 ///   Internal email; Internal: own email only).
 class SalesAccountDirectory {
-  /// Internal user (Home Accounts, Search Rates) — same Contact.Email POST as
-  /// admin add/edit Internal user, plus GET OwnerId portfolio and profile tag.
-  static Future<SalesAccountLoad> loadForCurrentUser() async {
-    if (!_isInternalSalesUser()) {
-      return const SalesAccountLoad(choices: []);
+  /// Admin Search Rates: Salesforce accounts, not app users.
+  static Future<SalesAccountLoad> loadAllAccounts() async {
+    final token = AuthDataHelper.getToken().trim();
+    if (token.isEmpty) {
+      return const SalesAccountLoad(choices: [], errorMessage: 'Not signed in');
     }
 
+    try {
+      final response = await HttpClientHelper.getWithBearer(
+        ApiConstants.allSalesforceAccounts,
+        token,
+      );
+      final parsed = _parseAccountResponse(response, label: 'GET+AllAccounts');
+      if (parsed.choices.isEmpty) {
+        return SalesAccountLoad(
+          choices: const [],
+          errorMessage: parsed.errorMessage ?? 'No accounts found',
+        );
+      }
+      return parsed;
+    } catch (e) {
+      debugPrint('SalesAccountDirectory loadAllAccounts: $e');
+      return const SalesAccountLoad(
+        choices: [],
+        errorMessage: 'Could not load accounts',
+      );
+    }
+  }
+
+  /// Admin Search Rates account step: every user from `GET /admin/all-users`.
+  static Future<SalesAccountLoad> loadAllUsers() async {
+    final token = AuthDataHelper.getToken().trim();
+    if (token.isEmpty) {
+      return const SalesAccountLoad(choices: [], errorMessage: 'Not signed in');
+    }
+
+    final choices = <SalesAccountChoice>[];
+    final seen = <String>{};
+    var page = 1;
+    var totalPages = 1;
+    String? error;
+
+    while (page <= totalPages && page <= 50) {
+      final url = '${ApiConstants.allUsers}?page=$page&limit=100';
+      debugPrint('SalesAccountDirectory: GET $url');
+      try {
+        final response = await HttpClientHelper.getWithBearer(url, token);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          error = parseApiErrorMessage(
+            response.data,
+            fallback: 'Could not load users',
+          );
+          break;
+        }
+        final decoded = jsonDecode(response.data);
+        if (decoded is! Map) break;
+        final parsed = AllUsersResponse.fromJson(
+          Map<String, dynamic>.from(decoded),
+        );
+        totalPages = parsed.totalPages <= 0 ? 1 : parsed.totalPages;
+        for (final user in parsed.data) {
+          final choice = _choiceFromUser(user);
+          if (choice == null) continue;
+          if (seen.add(choice.id)) choices.add(choice);
+        }
+        if (parsed.data.isEmpty) break;
+        page++;
+      } catch (e) {
+        debugPrint('SalesAccountDirectory loadAllUsers: $e');
+        error = 'Could not load users';
+        break;
+      }
+    }
+
+    choices.sort(
+      (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+    if (choices.isEmpty) {
+      return SalesAccountLoad(
+        choices: const [],
+        errorMessage: error ?? 'No users found',
+      );
+    }
+    return SalesAccountLoad(choices: choices);
+  }
+
+  static SalesAccountChoice? _choiceFromUser(UserData user) {
+    final userId =
+        (user.userId?.trim().isNotEmpty == true)
+            ? user.userId!.trim()
+            : (user.id?.trim() ?? '');
+    if (userId.isEmpty) return null;
+
+    final person = '${user.firstName ?? ''} ${user.lastName ?? ''}'.trim();
+    final company = user.companyName?.trim() ?? '';
+    final name =
+        person.isNotEmpty && company.isNotEmpty
+            ? '$person · $company'
+            : person.isNotEmpty
+            ? person
+            : company.isNotEmpty
+            ? company
+            : (user.email?.trim().isNotEmpty == true
+                ? user.email!.trim()
+                : (user.mobile?.trim().isNotEmpty == true
+                    ? user.mobile!.trim()
+                    : userId));
+
+    return SalesAccountChoice(
+      id: userId,
+      name: name,
+      userType: user.userType,
+      salesforceAccountId: user.accountId?.trim() ?? '',
+    );
+  }
+
+  static Future<SalesAccountLoad>? _currentUserLoad;
+
+  /// Internal user (Home Accounts, Search Rates) — same Contact.Email POST as
+  /// admin add/edit Internal user, plus GET OwnerId portfolio and profile tag.
+  /// Concurrent callers share one in-flight load.
+  static Future<SalesAccountLoad> loadForCurrentUser() {
+    if (!_isInternalSalesUser()) {
+      return Future.value(const SalesAccountLoad(choices: []));
+    }
+    final existing = _currentUserLoad;
+    if (existing != null) return existing;
+    final run = _loadForCurrentUser();
+    _currentUserLoad = run;
+    return run.whenComplete(() {
+      if (identical(_currentUserLoad, run)) _currentUserLoad = null;
+    });
+  }
+
+  static Future<SalesAccountLoad> _loadForCurrentUser() async {
     final email = _loginEmail();
-    SalesAccountLoad postLoad = const SalesAccountLoad(choices: []);
+    final postFuture =
+        email.isNotEmpty
+            ? _fetchByContactEmailPost(email)
+            : Future.value(const SalesAccountLoad(choices: []));
+    final results = await Future.wait([
+      postFuture,
+      _fetchByOwnerId(),
+      _choicesFromTaggedProfile(refresh: true),
+    ]);
+    final postLoad = results[0] as SalesAccountLoad;
+    final ownerLoad = results[1] as SalesAccountLoad;
+    final profileRows = results[2] as List<SalesAccountChoice>;
     if (email.isNotEmpty) {
-      postLoad = await _fetchByContactEmailPost(email);
       debugPrint(
         'SalesAccountDirectory: Internal load POST email=$email '
         '→ ${postLoad.choices.length} account(s)',
       );
     }
-
-    final ownerLoad = await _fetchByOwnerId();
-    final profileRows = await _choicesFromTaggedProfile(refresh: true);
 
     var merged = _mergeAccountLists([
       ...postLoad.choices,
@@ -213,8 +357,7 @@ class SalesAccountDirectory {
     if (accountId.isEmpty) return 'None';
 
     final salesforceName = (await resolveAccountDisplayName(accountId)).trim();
-    if (salesforceName.isNotEmpty &&
-        !_isAccountIdPlaceholder(salesforceName)) {
+    if (salesforceName.isNotEmpty && !_isAccountIdPlaceholder(salesforceName)) {
       return salesforceName;
     }
 

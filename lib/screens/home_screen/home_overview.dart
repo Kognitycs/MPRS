@@ -224,9 +224,9 @@ class HomeTodayStats {
     required this.usingSampleQuotes,
   });
 
-  /// Quote tabs on Book: 0 all, 1 draft, 2 accepted.
-  static const acceptedQuoteFilter = 2;
-  static const draftQuoteFilter = 1;
+  /// Quote tabs on Book: 0 all, 1 presented, 2 draft, 3 accepted.
+  static const acceptedQuoteFilter = 3;
+  static const draftQuoteFilter = 2;
 
   static HomeTodayStats from({
     required BookingController bookings,
@@ -673,7 +673,7 @@ class _QuickActions extends StatelessWidget {
         label: 'Quotes',
         color: const Color(0xFF7C3AED),
         background: const Color(0xFFF3E8FF),
-        onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 1),
+        onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 2),
       ),
       _Action(
         icon: Icons.inventory_2_outlined,

@@ -486,7 +486,8 @@ class SearchRouteController extends GetxController {
 
   /// Internal: create opportunity only when a customer account is selected.
   bool get shouldCreateOpportunity {
-    if (AuthDataHelper.getUserType().toLowerCase().trim() != 'internal') {
+    final type = AuthDataHelper.getUserType().toLowerCase().trim();
+    if (type != 'internal' && !AuthDataHelper.isAdminUser()) {
       return true;
     }
     final accountId = selectedSalesAccount.value?.accountIdForApi;

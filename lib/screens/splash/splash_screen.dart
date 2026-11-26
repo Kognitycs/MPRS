@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:mprs_android/core/auth_data_helper.dart';
-import 'package:mprs_android/core/constants/app_colors.dart';
 import 'package:mprs_android/screens/auth/login_mobile_screen.dart';
 import 'package:mprs_android/screens/auth/login_with_mpin_screen.dart';
 import 'package:mprs_android/screens/auth/new_mpin_screen.dart';
@@ -17,6 +16,9 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen> {
   static const _splashVideo = 'assets/videos/App_Video.mp4';
+
+  /// Matches the splash video background so the letterbox is not pure white.
+  static const _animationBackground = Color(0xFFFAF9FA);
 
   /// Fallback for portrait splash when the decoder has not reported size yet.
   static const _fallbackVideoW = 1080.0;
@@ -121,7 +123,7 @@ class _SplashScreenState extends State<SplashScreen> {
     final source = _videoSourceSize;
 
     return ColoredBox(
-      color: AppColors.white,
+      color: _animationBackground,
       child: Center(
         child: SizedBox(
           width: constraints.maxWidth,
@@ -154,12 +156,12 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.white,
+      backgroundColor: _animationBackground,
       body: LayoutBuilder(
         builder: (context, constraints) {
           if (!_controller.value.isInitialized) {
             return const ColoredBox(
-              color: AppColors.white,
+              color: _animationBackground,
               child: Center(child: CircularProgressIndicator()),
             );
           }

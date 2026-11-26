@@ -72,23 +72,39 @@ class InternalHomeStatsService {
     final accounts = accountLoad.choices;
     final customerTiers = SalesAccountCustomerTierCounts.fromAccounts(accounts);
 
-    var orderCount = 0;
-    if (Get.isRegistered<BookingController>(tag: BookingController.homeBookingsTag)) {
+    final accountIds = <String>{
+      for (final account in accounts)
+        if (account.id.trim().isNotEmpty) account.id.trim(),
+    };
+
+    final int orderCount;
+    final int openQuoteCount;
+    final int acceptedQuoteCount;
+    final List<SavedQuotationsModel> portfolioQuotes;
+    if (refreshBookings &&
+        Get.isRegistered<BookingController>(
+          tag: BookingController.homeBookingsTag,
+        )) {
       orderCount = BookingController.bookedOrderRows(
         Get.find<BookingController>(tag: BookingController.homeBookingsTag)
             .allBookings,
       ).length;
+      portfolioQuotes = _portfolioQuotesForStats();
+      openQuoteCount =
+          portfolioQuotes
+              .where((q) => SavedQuotationsModel.isDraftStatus(q.status))
+              .length;
+      acceptedQuoteCount =
+          portfolioQuotes
+              .where((q) => SavedQuotationsModel.isAcceptedStatus(q.status))
+              .length;
+    } else {
+      final fastCounts = await _portfolioCounts(accountIds);
+      orderCount = fastCounts.orders;
+      openQuoteCount = fastCounts.openQuotes;
+      acceptedQuoteCount = fastCounts.acceptedQuotes;
+      portfolioQuotes = const [];
     }
-
-    final mergedQuotes = _portfolioQuotesForStats();
-    final openQuoteCount =
-        mergedQuotes
-            .where((q) => SavedQuotationsModel.isDraftStatus(q.status))
-            .length;
-    final acceptedQuoteCount =
-        mergedQuotes
-            .where((q) => SavedQuotationsModel.isAcceptedStatus(q.status))
-            .length;
 
     return InternalHomeStats(
       accountCount: accounts.length,
@@ -97,8 +113,102 @@ class InternalHomeStatsService {
       openQuoteCount: openQuoteCount,
       acceptedQuoteCount: acceptedQuoteCount,
       customerTiers: customerTiers,
-      portfolioQuotes: mergedQuotes,
+      portfolioQuotes: portfolioQuotes,
     );
+  }
+
+  /// Id and status only. Skips full quote lines, currencies, and order payloads.
+  static Future<({int openQuotes, int acceptedQuotes, int orders})>
+  _portfolioCounts(Set<String> accountIds) async {
+    if (accountIds.isEmpty) {
+      return (openQuotes: 0, acceptedQuotes: 0, orders: 0);
+    }
+    final token = AuthDataHelper.getToken().trim();
+    if (token.isEmpty) {
+      return (openQuotes: 0, acceptedQuotes: 0, orders: 0);
+    }
+
+    final ids = accountIds.toList();
+    const chunkSize = 80;
+    final chunks = <List<String>>[];
+    for (var i = 0; i < ids.length; i += chunkSize) {
+      chunks.add(ids.skip(i).take(chunkSize).toList());
+    }
+
+    final parts = await Future.wait(
+      chunks.map((batch) async {
+        final results = await Future.wait([
+          _soqlRecords(ApiConstants.quoteStatusesByAccountIds(batch), token),
+          _soqlRecords(ApiConstants.orderIdsByAccountIds(batch), token),
+        ]);
+        var open = 0;
+        var accepted = 0;
+        for (final row in results[0]) {
+          final name = row['Name']?.toString();
+          if (SavedQuotationsModel.isTestQuoteLabel(name)) continue;
+          final status = row['Status']?.toString();
+          if (SavedQuotationsModel.isDraftStatus(status)) open++;
+          if (SavedQuotationsModel.isAcceptedStatus(status)) accepted++;
+        }
+        return (openQuotes: open, acceptedQuotes: accepted, orders: results[1].length);
+      }),
+    );
+    var open = 0;
+    var accepted = 0;
+    var orders = 0;
+    for (final part in parts) {
+      open += part.openQuotes;
+      accepted += part.acceptedQuotes;
+      orders += part.orders;
+    }
+    debugPrint(
+      'Internal home counts: open=$open accepted=$accepted orders=$orders',
+    );
+    return (openQuotes: open, acceptedQuotes: accepted, orders: orders);
+  }
+
+  static Future<List<Map<String, dynamic>>> _soqlRecords(
+    String url,
+    String token,
+  ) async {
+    try {
+      final response = await HttpClientHelper.getWithBearer(url, token);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return const [];
+      }
+      final body = response.data;
+      final decoded = body is String ? jsonDecode(body) : body;
+      return _recordMaps(decoded);
+    } catch (e) {
+      debugPrint('Internal home count query failed: $e');
+      return const [];
+    }
+  }
+
+  static List<Map<String, dynamic>> _recordMaps(dynamic decoded) {
+    List<dynamic> raw = const [];
+    if (decoded is List) {
+      raw = decoded;
+    } else if (decoded is Map) {
+      for (final key in ['records', 'data', 'body', 'result']) {
+        final value = decoded[key];
+        if (value is List) {
+          raw = value;
+          break;
+        }
+        if (value is Map) {
+          final nested = value['records'] ?? value['data'];
+          if (nested is List) {
+            raw = nested;
+            break;
+          }
+        }
+      }
+    }
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
   }
 
   /// Top origin → destination pairs from portfolio quotes (for analytics).
@@ -179,24 +289,36 @@ class InternalHomeStatsService {
       final token = AuthDataHelper.getToken();
       if (token.trim().isEmpty) return;
 
-      final response = await HttpClientHelper.getWithBearer(
-        ApiConstants.rmsAppOpportunities(),
-        token,
-      );
-      if (response.statusCode != 200) return;
+      final ids = portfolioIds.toList();
+      const chunkSize = 40;
+      for (var i = 0; i < ids.length; i += chunkSize) {
+        final batch = ids.skip(i).take(chunkSize).toList();
+        final response = await HttpClientHelper.getWithBearer(
+          ApiConstants.opportunitiesByAccountIds(batch),
+          token,
+        );
+        if (response.statusCode != 200) continue;
 
-      final body = response.data;
-      final decoded = body is String ? jsonDecode(body) : body;
-      for (final row in _opportunityRecordMaps(decoded)) {
-        final accountId = row['AccountId']?.toString().trim() ?? '';
-        if (accountId.isEmpty || !portfolioIds.contains(accountId)) continue;
+        final body = response.data;
+        final decoded = body is String ? jsonDecode(body) : body;
+        for (final row in _opportunityRecordMaps(decoded)) {
+          final accountId = row['AccountId']?.toString().trim() ?? '';
+          if (!SalesAccountDirectory.rowAccountInPortfolio(
+            accountId,
+            portfolioIds,
+          )) {
+            continue;
+          }
 
-        final origin = _portNameFromSfRelation(row['Origin_Port__r']);
-        final destination = _portNameFromSfRelation(row['Destination_Port__r']);
-        if (origin.isEmpty || destination.isEmpty) continue;
+          final origin = _portNameFromSfRelation(row['Origin_Port__r']);
+          final destination = _portNameFromSfRelation(
+            row['Destination_Port__r'],
+          );
+          if (origin.isEmpty || destination.isEmpty) continue;
 
-        final label = '$origin → $destination';
-        counts[label] = (counts[label] ?? 0) + 1;
+          final label = '$origin → $destination';
+          counts[label] = (counts[label] ?? 0) + 1;
+        }
       }
     } catch (e, st) {
       debugPrint('InternalHomeStatsService top search routes: $e\n$st');

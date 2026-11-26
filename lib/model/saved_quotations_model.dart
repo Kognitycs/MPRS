@@ -7,6 +7,10 @@ class SavedQuotationsModel {
   PortMaster? destinationPortR;
   String? currencyIsoCode;
   num? totalPrice;
+
+  /// Ocean freight sell × quantity for list cards. Other charges stay off this.
+  num? oceanFreightTotal;
+  String? oceanFreightCurrency;
   num? goodsValue;
   String? loadType;
   String? containerType;
@@ -34,6 +38,8 @@ class SavedQuotationsModel {
     this.destinationPortR,
     this.currencyIsoCode,
     this.totalPrice,
+    this.oceanFreightTotal,
+    this.oceanFreightCurrency,
     this.goodsValue,
     this.loadType,
     this.containerType,
@@ -601,6 +607,9 @@ class SavedQuotationsModel {
         destinationPortR: result.destinationPortR ?? source.destinationPortR,
         currencyIsoCode: result.currencyIsoCode ?? source.currencyIsoCode,
         totalPrice: result.totalPrice ?? source.totalPrice,
+        oceanFreightTotal: result.oceanFreightTotal ?? source.oceanFreightTotal,
+        oceanFreightCurrency:
+            result.oceanFreightCurrency ?? source.oceanFreightCurrency,
         goodsValue: result.goodsValue ?? source.goodsValue,
         loadType: result.loadType ?? source.loadType,
         containerType: result.containerType ?? source.containerType,

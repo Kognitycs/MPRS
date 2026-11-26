@@ -158,7 +158,7 @@ class _GenieScreenState extends State<GenieScreen> {
           _GenieAction(
             label: 'Book Shipment',
             icon: Icons.local_shipping_outlined,
-            onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 1),
+            onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 2),
           ),
         ],
       );

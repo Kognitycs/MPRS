@@ -40,14 +40,12 @@ class _InternalDashboardState extends State<InternalDashboard> {
   }
 
   Future<void> _loadAll() async {
-    await _loadBusinessStats(refreshBookings: true);
+    await _loadBusinessStats();
   }
 
-  Future<void> _loadBusinessStats({required bool refreshBookings}) async {
+  Future<void> _loadBusinessStats() async {
     setState(() => _statsLoading = true);
-    final stats = await InternalHomeStatsService.load(
-      refreshBookings: refreshBookings,
-    );
+    final stats = await InternalHomeStatsService.load();
     if (!mounted) return;
     setState(() {
       _stats = stats;
@@ -214,7 +212,7 @@ class _StatsGrid extends StatelessWidget {
                 label: 'Accepted quotes',
                 foot: 'Quotes',
                 loading: loading,
-                onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 2),
+                onTap: () => HomeActions.openBook(bookTab: 1, quoteFilter: 3),
               ),
             ),
           ],

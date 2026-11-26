@@ -402,7 +402,29 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
     return '$symbol${NumberFormat('#,##0').format(value)}';
   }
 
+  List<GetQuoteDetailModel> get _oceanFreightLines {
+    return _controller.bookingDetailItems.where((item) {
+      final name = (item.product ?? item.description ?? '').toUpperCase();
+      return name.contains('OCEAN FREIGHT');
+    }).toList();
+  }
+
+  /// Ocean freight sell price × quantity. Other charges stay off this total.
+  double? get _oceanFreightTotal {
+    final lines = _oceanFreightLines;
+    if (lines.isEmpty) return null;
+    return lines.fold<double>(0, (sum, item) => sum + _lineItemAmount(item));
+  }
+
   String get _displayAmount {
+    final oceanTotal = _oceanFreightTotal;
+    if (oceanTotal != null) {
+      final currency = _oceanFreightLines.first.displayCurrency;
+      final symbol = _moneySymbol(
+        currency.isEmpty ? _currencyIso : currency,
+      );
+      return '$symbol${NumberFormat('#,##0').format(oceanTotal)}';
+    }
     final symbol = _currencyIso == 'USD' ? '\$' : '₹';
     final items = _controller.bookingDetailItems;
     if (items.isNotEmpty) {
@@ -533,9 +555,27 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
     return sum;
   }
 
-  String _formatMoney(num value) {
-    final symbol = _currencyIso == 'USD' ? '\$' : '₹';
-    return '$symbol${NumberFormat('#,##0.00').format(value)}';
+  String _moneySymbol(String currency) {
+    switch (currency.trim().toUpperCase()) {
+      case 'USD':
+        return '\$';
+      case 'INR':
+        return '₹';
+      case 'EUR':
+        return '€';
+      case 'GBP':
+        return '£';
+      case 'AED':
+        return 'AED ';
+      default:
+        final code = currency.trim().toUpperCase();
+        return code.isEmpty ? '' : '$code ';
+    }
+  }
+
+  String _formatMoney(num value, {String? currency}) {
+    final code = (currency ?? _currencyIso).trim();
+    return '${_moneySymbol(code)}${NumberFormat('#,##0.00').format(value)}';
   }
 
   Future<void> _downloadQuotePdf(OrderDocumentModel document) async {
@@ -798,6 +838,17 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
               color: AppColors.main,
             ),
           ),
+          if (_oceanFreightTotal != null) ...[
+            const SizedBox(height: 6),
+            const Text(
+              '+ other applicable charges',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF667085),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1014,7 +1065,10 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Text(
-                                _formatMoney(amount),
+                                _formatMoney(
+                                  amount,
+                                  currency: item.displayCurrency,
+                                ),
                                 style: AppTextStyles.montserratBold.copyWith(
                                   fontSize: 14,
                                   color: Colors.black87,
@@ -1146,13 +1200,22 @@ class _QuoteCardDetailScreenState extends State<QuoteCardDetailScreen> {
                 const SizedBox(height: 12),
                 _infoRow('Charge type', item.chargeType ?? '—'),
                 _infoRow('Quantity', '${item.quantity?.toInt() ?? 0}'),
-                _infoRow('Amount', _formatMoney(_lineItemAmount(item))),
+                _infoRow(
+                  'Amount',
+                  _formatMoney(
+                    _lineItemAmount(item),
+                    currency: item.displayCurrency,
+                  ),
+                ),
                 _infoRow(
                   'Selling price',
-                  _formatMoney(_lineSellingUnitPrice(item)),
+                  _formatMoney(
+                    _lineSellingUnitPrice(item),
+                    currency: item.displayCurrency,
+                  ),
                 ),
-                if (item.currencyIsoCode != null)
-                  _infoRow('Currency', item.currencyIsoCode!),
+                if (item.displayCurrency.isNotEmpty)
+                  _infoRow('Currency', item.displayCurrency),
                 const SizedBox(height: 8),
               ],
             ),
